@@ -1555,7 +1555,7 @@ fn lua_key(key: &str) -> String {
 
 #[derive(Default)]
 struct ConfigNode {
-    values: BTreeMap<String, String>,
+    values: Vec<(String, String)>,
     children: BTreeMap<String, ConfigNode>,
 }
 
@@ -1567,7 +1567,7 @@ impl ConfigNode {
                 .or_default()
                 .insert(tail, key, value);
         } else {
-            self.values.insert(key, value);
+            self.values.push((key, value));
         }
     }
 }
@@ -1794,6 +1794,25 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn preserves_repeated_directives_inside_sections() {
+        let source = concat!(
+            "animations {\\n",
+            "    animation = windows, 1, 4, default\\n",
+            "    animation = workspaces, 1, 5, default\\n",
+            "}\\n",
+        );
+        let generated = hyprlang_to_lua(source);
+        assert_eq!(generated.matches("animation =").count(), 2, "{generated}");
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(&generated),
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.matches("animation =").count(), 2, "{parsed}");
     }
 
     #[test]
