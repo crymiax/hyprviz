@@ -771,7 +771,7 @@ fn create_dispatcher_namespace(lua: &Lua, prefix: String) -> LuaResult<Table> {
     let metatable = lua.create_table()?;
     metatable.set(
         "__index",
-        lua.create_function(move |lua, key: String| {
+        lua.create_function(move |lua, (_namespace, key): (Table, String)| {
             let full_name = format!("{prefix}.{key}");
             if is_dispatcher_namespace(&full_name) {
                 Ok(Value::Table(create_dispatcher_namespace(lua, full_name)?))
