@@ -1360,13 +1360,15 @@ fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
             if !keys.is_empty()
                 && keys.iter().all(|key| ["top", "right", "bottom", "left"].contains(key))
             {
-                let values = ["top", "right", "bottom", "left"].iter()
+                let values = ["top", "right", "bottom", "left"]
+                    .iter()
                     .filter_map(|key| table_string(value, key))
                     .collect::<Vec<_>>();
                 return Some(values.join(", "));
             }
             if !keys.is_empty() && keys.iter().all(|key| ["x", "y"].contains(key)) {
-                let values = ["x", "y"].iter()
+                let values = ["x", "y"]
+                    .iter()
                     .filter_map(|key| table_string(value, key))
                     .collect::<Vec<_>>();
                 return Some(values.join(", "));
@@ -1374,10 +1376,18 @@ fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
             let values = entries
                 .iter()
                 .filter_map(|(key, value)| {
-                    if key.is_some() { None } else { value_to_hyprlang(value) }
+                    if key.is_some() {
+                        None
+                    } else {
+                        value_to_hyprlang(value)
+                    }
                 })
                 .collect::<Vec<_>>();
-            if values.is_empty() { None } else { Some(values.join(", ")) }
+            if values.is_empty() {
+                None
+            } else {
+                Some(values.join(", "))
+            }
         }
     }
 }
@@ -1699,12 +1709,8 @@ mod tests {
         assert!(generated.contains("hl.raw(\"exec-once = notify-send\")"));
         assert!(generated.contains("hl.raw(\"unknown-setting = keep-me\")"));
 
-        let parsed = expand_lua_config(
-            Path::new("/tmp/hyprland.lua"),
-            Some(&generated),
-            false,
-        )
-        .unwrap();
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("exec-once = notify-send"), "{parsed}");
         assert!(parsed.contains("unknown-setting = keep-me"), "{parsed}");
     }
