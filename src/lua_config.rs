@@ -1,6 +1,6 @@
-use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
+use mlua::{Function, HookTriggers, Lua, MultiValue, Result as LuaResult, Table, Value, VmState};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap},
     error::Error,
     fs,
@@ -82,6 +82,24 @@ fn execute_lua_config(
     };
 
     let lua = Lua::new();
+    // A malformed or accidental infinite loop must not hang the GTK main thread.
+    // Count VM instructions across the main chunk and Lua-created coroutines.
+    let executed_instructions = Rc::new(Cell::new(0u64));
+    let instruction_counter = Rc::clone(&executed_instructions);
+    lua.set_global_hook(
+        HookTriggers::new().every_nth_instruction(10_000),
+        move |_, _| {
+            let executed = instruction_counter.get().saturating_add(10_000);
+            instruction_counter.set(executed);
+            if executed > 25_000_000 {
+                return Err(mlua::Error::RuntimeError(
+                    "Lua configuration exceeded the 25 million instruction evaluation limit"
+                        .to_string(),
+                ));
+            }
+            Ok(VmState::Continue)
+        },
+    )?;
     let output = Rc::new(RefCell::new(Vec::<String>::new()));
     register_hyprland_api(&lua, Rc::clone(&output))?;
 
@@ -101,11 +119,13 @@ fn execute_lua_config(
     )?;
 
     let loaded: Table = package.get("loaded")?;
+    let package_searchpath: Function = package.get("searchpath")?;
+    let require_package = package.clone();
     let require_stack = Rc::clone(&module_stack);
     let require_config_dir = config_dir.clone();
     let require_fn = lua.create_function(move |lua, module: String| {
         let cached: Value = loaded.get(module.as_str())?;
-        if !matches!(&cached, Value::Nil) {
+        if !matches!(&cached, Value::Nil | Value::Boolean(false)) {
             return Ok(cached);
         }
 
@@ -120,7 +140,16 @@ fn execute_lua_config(
             .cloned()
             .unwrap_or_else(|| require_config_dir.join("hyprland.lua"));
 
-        let Some(module_path) = resolve_module_path(&module, &caller, &require_config_dir) else {
+        let module_path = resolve_module_path(&module, &caller, &require_config_dir)
+            .or_else(|| {
+                let package_path: String = require_package.get("path").ok()?;
+                package_searchpath
+                    .call::<Option<String>>((module.as_str(), package_path))
+                    .ok()
+                    .flatten()
+                    .map(PathBuf::from)
+            });
+        let Some(module_path) = module_path else {
             return native_require.call::<Value>(module);
         };
 
@@ -172,7 +201,7 @@ fn execute_lua_config(
         let result = lua
             .load(&contents)
             .set_name(path.to_string_lossy().into_owned())
-            .eval::<Value>();
+            .eval::<MultiValue>();
         dofile_stack.borrow_mut().pop();
         result
     })?;
@@ -189,9 +218,18 @@ fn execute_lua_config(
         let path = resolve_module_path(&filename, &caller, &loadfile_config_dir)
             .ok_or_else(|| mlua::Error::RuntimeError(format!("Lua file not found: {filename}")))?;
         let contents = fs::read_to_string(&path).map_err(mlua::Error::external)?;
-        lua.load(&contents)
+        let chunk = lua
+            .load(&contents)
             .set_name(path.to_string_lossy().into_owned())
-            .into_function()
+            .into_function()?;
+        let chunk_path = path.clone();
+        let chunk_stack = Rc::clone(&loadfile_stack);
+        lua.create_function(move |_, args: MultiValue| {
+            chunk_stack.borrow_mut().push(chunk_path.clone());
+            let result = chunk.call::<MultiValue>(args);
+            chunk_stack.borrow_mut().pop();
+            result
+        })
     })?;
     globals.set("loadfile", loadfile)?;
 
@@ -330,7 +368,7 @@ fn is_hyprviz_module(module: &str) -> bool {
 
 fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResult<()> {
     let hl = lua.create_table()?;
-    let known_config = Rc::new(RefCell::new(HashMap::<String, String>::new()));
+    let known_config = Rc::new(RefCell::new(HashMap::<String, LuaValue>::new()));
 
     let config_output = Rc::clone(&output);
     let config_values = Rc::clone(&known_config);
@@ -352,7 +390,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         lua.create_function(move |lua, key: String| {
             let key = key.replace(':', ".");
             match get_config_values.borrow().get(&key).cloned() {
-                Some(value) => string_to_lua_value(lua, &value),
+                Some(value) => lua_value_to_ml_value(lua, &value, 0),
                 None => Ok(Value::Nil),
             }
         })?,
@@ -398,6 +436,15 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
                 append_output(&bind_output, line);
             }
             create_handle(lua)
+        })?,
+    )?;
+
+    let unbind_output = Rc::clone(&output);
+    hl.set(
+        "unbind",
+        lua.create_function(move |_, key: String| {
+            append_output(&unbind_output, format!("unbind = {key}"));
+            Ok(())
         })?,
     )?;
 
@@ -541,7 +588,6 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
     for name in [
         "dispatch",
         "print",
-        "unbind",
         "off",
         "load_plugin",
         "clear_crashed_lockscreen",
@@ -573,12 +619,9 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
     )?;
     hl.set(
         "define_submap",
-        lua.create_function(|_, args: MultiValue| {
-            if let Some(Value::Function(callback)) = args.into_iter().last() {
-                callback.call::<()>(())?;
-            }
-            Ok(())
-        })?,
+        // The callback is retained in the user's Lua source, but is not invoked
+        // here: it belongs to live compositor input state and can register binds.
+        lua.create_function(|lua, _: MultiValue| create_handle(lua))?,
     )?;
     hl.set(
         "is_key_down",
@@ -591,6 +634,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
 
     for name in [
         "get_windows",
+        "get_workspace_windows",
         "get_workspaces",
         "get_monitors",
         "get_layers",
@@ -784,33 +828,53 @@ fn lua_value_as_string(value: &Value) -> Option<String> {
     }
 }
 
-fn string_to_lua_value(lua: &Lua, value: &str) -> LuaResult<Value> {
-    if value == "true" {
-        return Ok(Value::Boolean(true));
+fn lua_value_to_ml_value(lua: &Lua, value: &LuaValue, depth: usize) -> LuaResult<Value> {
+    if depth > 64 {
+        return Ok(Value::Nil);
     }
-    if value == "false" {
-        return Ok(Value::Boolean(false));
+    match value {
+        LuaValue::Scalar(value) => {
+            let value = value.trim();
+            if value == "nil" {
+                Ok(Value::Nil)
+            } else if value == "true" {
+                Ok(Value::Boolean(true))
+            } else if value == "false" {
+                Ok(Value::Boolean(false))
+            } else if let Ok(value) = value.parse::<i64>() {
+                Ok(Value::Integer(value))
+            } else if let Ok(value) = value.parse::<f64>() {
+                Ok(Value::Number(value))
+            } else {
+                Ok(Value::String(lua.create_string(value)?))
+            }
+        }
+        LuaValue::Table(entries) => {
+            let table = lua.create_table()?;
+            let mut sequence_index = 1usize;
+            for (key, child) in entries {
+                let child = lua_value_to_ml_value(lua, child, depth + 1)?;
+                if let Some(key) = key {
+                    table.set(key.as_str(), child)?;
+                } else {
+                    table.set(sequence_index, child)?;
+                    sequence_index += 1;
+                }
+            }
+            Ok(Value::Table(table))
+        }
     }
-    if let Ok(value) = value.parse::<i64>() {
-        return Ok(Value::Integer(value));
-    }
-    if let Ok(value) = value.parse::<f64>() {
-        return Ok(Value::Number(value));
-    }
-    Ok(Value::String(lua.create_string(value)?))
 }
 
 fn flatten_config_values(
     value: &LuaValue,
     prefix: &str,
-    values: &mut HashMap<String, String>,
+    values: &mut HashMap<String, LuaValue>,
 ) {
+    if !prefix.is_empty() {
+        values.insert(prefix.to_string(), value.clone());
+    }
     let LuaValue::Table(entries) = value else {
-        if !prefix.is_empty() {
-            if let Some(value) = value_to_hyprlang(value) {
-                values.insert(prefix.to_string(), value);
-            }
-        }
         return;
     };
     for (key, child) in entries {
@@ -896,8 +960,16 @@ fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Opt
         if table_bool(&options, "release") == Some(true) {
             directive.push('r');
         }
-        if table_bool(&options, "mouse") == Some(true) {
+        if table_bool(&options, "click") == Some(true)
+            || table_bool(&options, "drag") == Some(true)
+        {
             directive.push('m');
+        }
+        if table_bool(&options, "non_consuming") == Some(true) {
+            directive.push('n');
+        }
+        if table_bool(&options, "submap_universal") == Some(true) {
+            directive.push('s');
         }
     }
 
@@ -912,20 +984,52 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "exec_raw" => "execr",
         "exit" => "exit",
         "submap" => "submap",
+        "pass" => "pass",
+        "send_shortcut" => "sendshortcut",
+        "send_key_state" => "sendkeystate",
+        "layout" => "layoutmsg",
+        "dpms" => "dpms",
+        "event" => "event",
+        "global" => "global",
+        "force_renderer_reload" => "forcerendererreload",
+        "force_idle" => "forceidle",
         "window.close" => "killactive",
         "window.kill" => "forcekillactive",
-        "window.float" => "togglefloating",
-        "window.fullscreen" => "fullscreen",
+        "window.signal" => "signal",
+        "window.float" | "window.toggle_floating" => "togglefloating",
+        "window.fullscreen" | "window.toggle_fullscreen" => "fullscreen",
+        "window.fullscreen_state" => "fullscreenstate",
         "window.pseudo" => "pseudo",
         "window.move" => "movewindow",
         "window.swap" => "swapwindow",
         "window.center" => "centerwindow",
+        "window.cycle_next" => "cyclenext",
+        "window.tag" => "tagwindow",
+        "window.clear_tags" => "tagwindow",
+        "window.toggle_swallow" => "toggleswallow",
         "window.pin" => "pin",
+        "window.bring_to_top" => "bringactivetotop",
+        "window.alter_zorder" => "alterzorder",
+        "window.set_prop" => "setprop",
+        "window.deny_from_group" => "denywindowfromgroup",
+        "window.drag" => "dragwindow",
         "window.resize" => "resizeactive",
         "workspace.toggle_special" => "togglespecialworkspace",
         "workspace.rename" => "renameworkspace",
+        "workspace.move" => "movecurrentworkspacetomonitor",
+        "workspace.swap_monitors" => "swapactiveworkspaces",
+        "workspace.change_id" => "changegroupactive",
         "focus" => "movefocus",
         "no_op" => "nothing",
+        "group.toggle" => "togglegroup",
+        "group.next" => "changegroupactive",
+        "group.prev" => "changegroupactive",
+        "group.active" => "changegroupactive",
+        "group.move_window" => "moveintogroup",
+        "group.lock" => "lockgroups",
+        "group.lock_active" => "lockactivegroup",
+        "cursor.move_to_corner" => "movecursortocorner",
+        "cursor.move" => "movecursor",
         _ => return None,
     };
 
@@ -935,13 +1039,40 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
             LuaValue::Table(_) => {
                 for key in [
                     "action",
+                    "mode",
+                    "internal",
+                    "client",
                     "direction",
                     "workspace",
                     "monitor",
+                    "monitor1",
+                    "monitor2",
                     "signal",
                     "x",
                     "y",
                     "name",
+                    "window",
+                    "target",
+                    "next",
+                    "prev",
+                    "into_group",
+                    "into_or_create_group",
+                    "out_of_group",
+                    "group_aware",
+                    "follow",
+                    "index",
+                    "forward",
+                    "corner",
+                    "mods",
+                    "key",
+                    "state",
+                    "timeout",
+                    "msg",
+                    "message",
+                    "prop",
+                    "value",
+                    "tag",
+                    "mode",
                 ] {
                     if let Some(value) = table_string(argument, key) {
                         values.push(value);
@@ -1193,21 +1324,32 @@ fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
                     None => colors,
                 });
             }
+            // Hyprland accepts CSS-gap and vec2 tables for some config values.
+            // Convert those known value shapes instead of confusing them with sections.
+            let keys = entries.iter()
+                .filter_map(|(key, _)| key.as_deref())
+                .collect::<Vec<_>>();
+            if !keys.is_empty()
+                && keys.iter().all(|key| ["top", "right", "bottom", "left"].contains(key))
+            {
+                let values = ["top", "right", "bottom", "left"].iter()
+                    .filter_map(|key| table_string(value, key))
+                    .collect::<Vec<_>>();
+                return Some(values.join(", "));
+            }
+            if !keys.is_empty() && keys.iter().all(|key| ["x", "y"].contains(key)) {
+                let values = ["x", "y"].iter()
+                    .filter_map(|key| table_string(value, key))
+                    .collect::<Vec<_>>();
+                return Some(values.join(", "));
+            }
             let values = entries
                 .iter()
                 .filter_map(|(key, value)| {
-                    if key.is_some() {
-                        None
-                    } else {
-                        value_to_hyprlang(value)
-                    }
+                    if key.is_some() { None } else { value_to_hyprlang(value) }
                 })
                 .collect::<Vec<_>>();
-            if values.is_empty() {
-                None
-            } else {
-                Some(values.join(", "))
-            }
+            if values.is_empty() { None } else { Some(values.join(", ")) }
         }
     }
 }
@@ -1551,6 +1693,46 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_config_tables_and_get_config_as_lua_values() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"
+                local gaps = { top = 3, right = 4, bottom = 5, left = 6 }
+                hl.config({ general = { gaps_in = gaps } })
+                local current = hl.get_config("general.gaps_in")
+                hl.config({ general = { gaps_out = current.top + current.right } })
+                "#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("gaps_in = 3, 4, 5, 6"), "{parsed}");
+        assert!(parsed.contains("gaps_out = 7"), "{parsed}");
+    }
+
+    #[test]
+    fn loadfile_and_dofile_are_relative_to_the_calling_module() {
+        let dir = test_dir("loadfile");
+        fs::write(
+            dir.join("nested.lua"),
+            "local values = require('values')\nreturn values.base, values.base + 1\n",
+        )
+        .unwrap();
+        fs::write(dir.join("values.lua"), "return { base = 9 }\n").unwrap();
+        let source = r#"
+            local chunk = assert(loadfile("./nested.lua"))
+            local first, second = chunk()
+            local third, fourth = dofile("./nested.lua")
+            hl.config({ general = { gaps_in = first + third, gaps_out = second + fourth } })
+        "#;
+        let parsed = expand_lua_config(&dir.join("hyprland.lua"), Some(source), false).unwrap();
+        assert!(parsed.contains("gaps_in = 18"), "{parsed}");
+        assert!(parsed.contains("gaps_out = 20"), "{parsed}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn evaluates_bind_dispatcher_closures_and_flags() {
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
@@ -1594,6 +1776,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("syntax") || error.to_string().contains("unexpected"));
+    }
+
+    #[test]
+    fn rejects_infinite_lua_loops() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some("while true do end"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("instruction evaluation limit"));
     }
 
     #[test]
