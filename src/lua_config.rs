@@ -1663,19 +1663,11 @@ fn lua_literal(value: &str) -> String {
 fn serialize_directive(key: &str, value: &str) -> Option<String> {
     let parts = value.split(',').map(str::trim).collect::<Vec<_>>();
     match key {
-        "monitor" => {
-            let output = parts.first()?;
-            let mode = parts.get(1).copied().unwrap_or("preferred");
-            let position = parts.get(2).copied().unwrap_or("auto");
-            let scale = parts.get(3).copied().unwrap_or("1");
-            Some(format!(
-                "hl.monitor({{ output = {}, mode = {}, position = {}, scale = {} }})\n",
-                lua_quote(output),
-                lua_quote(mode),
-                lua_quote(position),
-                lua_literal(scale)
-            ))
-        }
+        // Preserve legacy monitor fields beyond scale (transform, mirror, HDR, VRR).
+        "monitor" => Some(format!(
+            "hl.raw({})\n",
+            lua_quote(&format!("{key} = {value}"))
+        )),
         "env" => Some(format!(
             "hl.env({}, {})\n",
             lua_quote(parts.first()?),
@@ -1688,7 +1680,8 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
 }
 
 fn serialize_bind_directive(key: &str, parts: &[&str]) -> Option<String> {
-    if parts.len() < 3 {
+    let flags = key.strip_prefix("bind")?;
+    if !flags.chars().all(|flag| "lermns".contains(flag)) || parts.len() < 3 {
         return None;
     }
     let modifiers = parts[0]
@@ -1723,6 +1716,15 @@ fn serialize_bind_directive(key: &str, parts: &[&str]) -> Option<String> {
     if key.contains('r') {
         flags.push("release = true");
     }
+    if key.contains('m') {
+        flags.push("click = true");
+    }
+    if key.contains('n') {
+        flags.push("non_consuming = true");
+    }
+    if key.contains('s') {
+        flags.push("submap_universal = true");
+    }
     let opts = if flags.is_empty() {
         String::new()
     } else {
@@ -1743,6 +1745,36 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn preserves_all_positional_monitor_fields() {
+        let source = concat!(
+            "monitor = eDP-1, preferred, auto, 1, transform, 1, ",
+            "mirror, HDMI-A-1\n",
+        );
+        let generated = hyprlang_to_lua(source);
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(
+            parsed.contains("monitor = eDP-1, preferred, auto, 1, transform, 1, mirror, HDMI-A-1"),
+            "{parsed}"
+        );
+    }
+
+    #[test]
+    fn preserves_supported_bind_flags_when_round_tripping() {
+        let source = concat!(
+            "bindm = , mouse:272, exec, notify-send mouse\n",
+            "bindn = , Q, exec, notify-send non-consuming\n",
+            "binds = SUPER, Q, exec, notify-send universal\n",
+        );
+        let generated = hyprlang_to_lua(source);
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("bindm = ,mouse:272,exec,notify-send mouse"), "{parsed}");
+        assert!(parsed.contains("bindn = ,Q,exec,notify-send non-consuming"), "{parsed}");
+        assert!(parsed.contains("binds = SUPER,Q,exec,notify-send universal"), "{parsed}");
     }
 
     #[test]
