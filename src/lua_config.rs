@@ -1906,12 +1906,14 @@ mod tests {
                 local main = "SUPER"
                 local key = main .. "+Q"
                 hl.bind(key, hl.dsp.exec_cmd("kitty"), { locked = true, repeating = true })
+                hl.bind("SUPER+X", hl.dsp.window.close())
                 "#,
             ),
             false,
         )
         .unwrap();
         assert!(parsed.contains("bindle = SUPER,Q,exec,kitty"), "{parsed}");
+        assert!(parsed.contains("bind = SUPER,X,killactive"), "{parsed}");
     }
 
     #[test]
