@@ -763,7 +763,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
     let meta = lua.create_table()?;
     meta.set(
         "__index",
-        lua.create_function(|lua, _key: Value| {
+        lua.create_function(|lua, (_table, _key): (Table, Value)| {
             let function = lua.create_function(|_, _: MultiValue| Ok(()))?;
             Ok(Value::Function(function))
         })?,
@@ -803,7 +803,7 @@ fn create_noop_namespace(lua: &Lua) -> LuaResult<Table> {
     let metatable = lua.create_table()?;
     metatable.set(
         "__index",
-        lua.create_function(|lua, _key: Value| {
+        lua.create_function(|lua, (_table, _key): (Table, Value)| {
             let function = lua.create_function(|lua, _: MultiValue| create_handle(lua))?;
             Ok(Value::Function(function))
         })?,
