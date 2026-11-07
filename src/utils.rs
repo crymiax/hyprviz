@@ -387,17 +387,28 @@ pub fn update_source_line(config_path: &PathBuf, profile: &str) -> io::Result<()
     if crate::lua_config::is_lua_config_path(config_path) {
         if profile != "Default"
             && (profile.is_empty()
-                || !profile.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+                || !profile
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
         {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid profile name"));
         }
-        let module = if profile == "Default" { "./hyprviz".to_string() } else { format!("./hyprviz/{profile}") };
-        let new_source = format!("require({})", serde_json::to_string(&module).unwrap());
+        let module = if profile == "Default" {
+            "./hyprviz".to_string()
+        } else {
+            format!("./hyprviz/{profile}")
+        };
+        let module_literal = serde_json::to_string(&module)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let new_source = format!("require({module_literal})");
         let target_index = lines.iter().enumerate().rev().find_map(|(index, line)| {
             crate::lua_config::has_hyprviz_require(line).then_some(index)
         });
-        if let Some(index) = target_index { lines[index] = new_source; }
-        else { lines.push(new_source); }
+        if let Some(index) = target_index {
+            lines[index] = new_source;
+        } else {
+            lines.push(new_source);
+        }
     } else {
         let target_index = lines.iter().enumerate().rev().find_map(|(index, line)| {
             line.trim().starts_with("source = ./hyprviz").then_some(index)
@@ -407,8 +418,11 @@ pub fn update_source_line(config_path: &PathBuf, profile: &str) -> io::Result<()
         } else {
             format!("source = ./hyprviz/{}.conf", profile)
         };
-        if let Some(index) = target_index { lines[index] = new_source; }
-        else { lines.push(new_source); }
+        if let Some(index) = target_index {
+            lines[index] = new_source;
+        } else {
+            lines.push(new_source);
+        }
     }
 
     atomic_write(config_path, &(lines.join("\n") + "\n"))
@@ -428,11 +442,14 @@ pub fn get_current_profile(file_content: &str) -> String {
             if let Some(start_suffix_idx_relative) = line_after_prefix.find(suffix) {
                 let start_suffix_idx_absolute = start_profile_idx + start_suffix_idx_relative;
                 let end_suffix_idx_absolute = start_suffix_idx_absolute + suffix.len();
-                let is_valid_ending = end_suffix_idx_absolute == line.len()
-                    || line[end_suffix_idx_absolute..].starts_with(|c: char| c.is_whitespace() || c == '#');
+                        let is_valid_ending = end_suffix_idx_absolute == line.len()
+                    || line[end_suffix_idx_absolute..]
+                        .starts_with(|c: char| c.is_whitespace() || c == '#');
                 if is_valid_ending && start_profile_idx < start_suffix_idx_absolute {
                     let extracted = &line[start_profile_idx..start_suffix_idx_absolute];
-                    if !extracted.is_empty() { return extracted.to_string(); }
+                    if !extracted.is_empty() {
+                        return extracted.to_string();
+                    }
                 }
             }
         }
@@ -454,10 +471,16 @@ pub fn find_all_profiles() -> Option<Vec<String>> {
         };
         if file_name.ends_with(&suffix) {
             let profile_name = &file_name[..file_name.len() - suffix.len()];
-            if !profile_name.is_empty() { profiles.push(profile_name.to_string()); }
+            if !profile_name.is_empty() {
+                profiles.push(profile_name.to_string());
+            }
         }
     }
-    if profiles.is_empty() { None } else { Some(profiles) }
+    if profiles.is_empty() {
+        None
+    } else {
+        Some(profiles)
+    }
 }
 
 /// Reads the main Hyprland config, filters out HyprViz profile sources, and expands it.
