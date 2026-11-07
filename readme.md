@@ -21,6 +21,42 @@ Comes with a custom [hyprparser](https://crates.io/crates/hyprparser) for Hyprla
 
 </div>
 
+## Lua configuration
+
+When `hyprland.lua` is present, HyprViz evaluates it with an embedded Lua 5.4 VM. Normal Lua control flow, local functions, computed tables, and local modules are evaluated as code rather than parsed from source text.
+
+A minimal example:
+
+```lua
+local gaps = 6
+local terminal = "alacritty"
+
+hl.config({
+    general = {
+        gaps_in = gaps,
+        gaps_out = 12,
+    },
+    decoration = {
+        rounding = 8,
+    },
+})
+
+hl.bind("SUPER + RETURN", hl.dsp.exec_cmd(terminal))
+hl.on("hyprland.start", function()
+    hl.exec_cmd("swww-daemon")
+end)
+
+-- HyprViz's GUI-managed settings are loaded separately.
+require("./hyprviz")
+
+```
+
+HyprViz stores GUI-managed values in `hyprviz.lua` and additional profiles in `hyprviz/<profile>.lua`. The main `hyprland.lua` file and Lua code outside the managed block are kept intact when the GUI saves changes. Use `require()` for modules; `dofile()` and `loadfile()` resolve relative paths from the file currently being evaluated. Existing Hyprland directives that do not have a typed serializer are retained through `hl.raw("directive = value")`.
+
+The editor is a configuration evaluator, not a running compositor. Live window, workspace and monitor queries return empty or `nil` values. Dispatcher calls, plugins, timers and ordinary event callbacks are not run. The `hyprland.start` callback is evaluated only to collect startup `hl.exec_cmd()` entries; these become `exec-once` directives and are never launched by the editor.
+
+For safer evaluation, general-purpose `io` access is disabled, only read-only `os` helpers are exposed, and each config evaluation is capped at 128 MiB of Lua memory and 25 million VM instructions. Lua 5.4 is built from vendored sources, so a system Lua installation is not required.
+
 ## Installation
 
 [![Packaging status](https://repology.org/badge/vertical-allrepos/hyprviz.svg)](https://repology.org/project/hyprviz)
