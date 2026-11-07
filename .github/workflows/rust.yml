@@ -1,7 +1,6 @@
 name: Rust
 on:
   push:
-    branches: ["main"]
     paths:
       - '**/*.rs'
       - 'src/**'
