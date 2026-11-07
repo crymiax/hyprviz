@@ -807,7 +807,7 @@ fn lua_value_to_value(value: Value, depth: usize) -> LuaResult<LuaValue> {
             for pair in table.clone().pairs::<Value, Value>() {
                 let (key, value) = pair?;
                 if let Value::Integer(index) = key {
-                    if *index >= 1 && (*index as usize) <= sequence_len {
+                    if index >= 1 && (index as usize) <= sequence_len {
                         continue;
                     }
                 }
