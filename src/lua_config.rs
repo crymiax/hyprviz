@@ -469,7 +469,15 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
     hl.set(
         "unbind",
         lua.create_function(move |_, key: String| {
-            append_output(&unbind_output, format!("unbind = {key}"));
+            let key_parts = key
+                .split(['+', ' '])
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            if let Some(key_name) = key_parts.last() {
+                let modifiers = key_parts[..key_parts.len() - 1].join("_");
+                append_output(&unbind_output, format!("unbind = {modifiers},{key_name}"));
+            }
             Ok(())
         })?,
     )?;
@@ -597,12 +605,19 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         })?,
     )?;
 
+    let startup_callback_depth = Rc::new(Cell::new(0usize));
     let exec_output = Rc::clone(&output);
+    let exec_startup_depth = Rc::clone(&startup_callback_depth);
     hl.set(
         "exec_cmd",
         lua.create_function(move |_, args: MultiValue| {
             if let Some(command) = args.into_iter().next().as_ref().and_then(lua_value_as_string) {
-                append_output(&exec_output, format!("exec = {command}"));
+                let directive = if exec_startup_depth.get() > 0 {
+                    "exec-once"
+                } else {
+                    "exec"
+                };
+                append_output(&exec_output, format!("{directive} = {command}"));
             }
             Ok(())
         })?,
@@ -622,9 +637,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         hl.set(name, lua.create_function(|_, _: MultiValue| Ok(()))?)?;
     }
 
+    let startup_event_depth = Rc::clone(&startup_callback_depth);
     hl.set(
         "on",
-        lua.create_function(|lua, args: MultiValue| {
+        lua.create_function(move |lua, args: MultiValue| {
             let mut args = args.into_iter();
             let event = args.next().as_ref().and_then(lua_value_as_string);
             let callback = args.find_map(|value| match value {
@@ -634,7 +650,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
             if event.as_deref() == Some("hyprland.start")
                 && let Some(callback) = callback
             {
-                callback.call::<()>(())?;
+                startup_event_depth.set(startup_event_depth.get().saturating_add(1));
+                let result = callback.call::<()>(());
+                startup_event_depth.set(startup_event_depth.get().saturating_sub(1));
+                result?;
             }
             create_handle(lua)
         })?,
@@ -1713,6 +1732,27 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("exec-once = notify-send"), "{parsed}");
         assert!(parsed.contains("unknown-setting = keep-me"), "{parsed}");
+    }
+
+    #[test]
+    fn collects_startup_commands_and_serializes_unbind_keys() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"
+                hl.on("hyprland.start", function()
+                    hl.exec_cmd("notify-send boot")
+                end)
+                hl.exec_cmd("notify-send manual")
+                hl.unbind("SUPER+Q")
+                "#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("exec-once = notify-send boot"), "{parsed}");
+        assert!(parsed.contains("exec = notify-send manual"), "{parsed}");
+        assert!(parsed.contains("unbind = SUPER,Q"), "{parsed}");
     }
 
     #[test]
