@@ -439,6 +439,15 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         })?,
     )?;
 
+    let raw_output = Rc::clone(&output);
+    hl.set(
+        "raw",
+        lua.create_function(move |_, line: String| {
+            append_output(&raw_output, line);
+            Ok(())
+        })?,
+    )?;
+
     let bind_output = Rc::clone(&output);
     hl.set(
         "bind",
@@ -1618,8 +1627,9 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
             lua_quote(parts.first()?),
             lua_quote(parts.get(1).copied().unwrap_or(""))
         )),
-        key if key.starts_with("bind") => serialize_bind_directive(key, &parts),
-        _ => None,
+        key if key.starts_with("bind") => serialize_bind_directive(key, &parts)
+            .or_else(|| Some(format!("hl.raw({})\\n", lua_quote(&format!("{key} = {value}"))))),
+        _ => Some(format!("hl.raw({})\\n", lua_quote(&format!("{key} = {value}")))),
     }
 }
 
@@ -1679,6 +1689,22 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
+        let generated = hyprlang_to_lua("exec-once = notify-send\\nunknown-setting = keep-me\\n");
+        assert!(generated.contains("hl.raw(\\\"exec-once = notify-send\\\")"));
+        assert!(generated.contains("hl.raw(\\\"unknown-setting = keep-me\\\")"));
+
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(&generated),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("exec-once = notify-send"), "{parsed}");
+        assert!(parsed.contains("unknown-setting = keep-me"), "{parsed}");
     }
 
     #[test]
