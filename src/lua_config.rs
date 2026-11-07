@@ -1598,7 +1598,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn preserves_repeated_directives_inside_sections() {
         let source = concat!(
             "animations {\n",
