@@ -1,4 +1,4 @@
-**this fork covers hyprviz with lua support**
+**this fork covers hyprviz with lua support :D**
 
 
 <div align='center'>
