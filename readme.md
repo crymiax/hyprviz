@@ -12,7 +12,7 @@
 **Fork** of [HyprGUI](https://github.com/MarkusVolk/hyprgui) — an unofficial GUI for configuring Hyprland, built with GTK4 and Rust. 🚀🦀<br>
 Comes with a custom [hyprparser](https://crates.io/crates/hyprparser) for Hyprland's configuration file. (Rust btw) 🦀
 
-> **Lua configuration:** HyprViz can read and edit declarative Lua configurations introduced in Hyprland 0.55. It understands static `hl.config`, `hl.monitor`, `hl.env`, supported `hl.bind` dispatchers, `hl.window_rule`, `hl.animation`, and `hl.gesture` calls, including local modules loaded with `require()`. Dynamic Lua expressions and custom callbacks are not evaluated; they remain in the original files. GUI-managed settings are stored separately in `hyprviz.lua`.
+> **Lua configuration:** HyprViz embeds Lua 5.4 and evaluates configuration files as Lua programs, including local variables, functions, conditionals, loops, computed tables, `require()`, `dofile()`, and `loadfile()`. It collects the supported declarative `hl.*` configuration calls for the GUI. Compositor-only query/event features have no live compositor state in the editor, and commands, plugins, and event callbacks are not executed. GUI-managed settings are stored separately in `hyprviz.lua`.
 
 ![Preview](.github/preview.png)
 

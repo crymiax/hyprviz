@@ -5,7 +5,7 @@ use rust_i18n::{available_locales, i18n, t};
 use std::{
     cell::RefCell,
     env, fs,
-    path::{Path, PathBuf},
+    path::Path,
     rc::Rc,
     time::Instant,
 };

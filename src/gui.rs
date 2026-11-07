@@ -1044,7 +1044,16 @@ along with this program; if not, see
 
         if !history.borrow().get_current_state().is_empty() {
             let config_str_for_parse = if crate::lua_config::is_lua_config_path(&path) {
-                crate::lua_config::lua_to_hyprlang(&config_str)
+                match crate::lua_config::expand_lua_config(&path, Some(&config_str), false) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        self.custom_error_popup(
+                            &t!("gui.reading_failed"),
+                            &format!("Lua configuration evaluation failed: {error}"),
+                        );
+                        return;
+                    }
+                }
             } else {
                 config_str.clone()
             };
