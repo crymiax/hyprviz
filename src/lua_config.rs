@@ -297,14 +297,25 @@ fn require_modules(source: &str) -> Vec<String> {
     while cursor < bytes.len() {
         if bytes[cursor] == b'-' && bytes.get(cursor + 1) == Some(&b'-') {
             cursor += 2;
-            while cursor < bytes.len() && bytes[cursor] != b'\n' {
-                cursor += 1;
+            if let Some(end) = skip_lua_long_bracket(source, cursor) {
+                cursor = end;
+            } else {
+                while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                    cursor += 1;
+                }
             }
             continue;
         }
 
         if bytes[cursor] == b'\'' || bytes[cursor] == b'"' {
             skip_lua_string(source, &mut cursor);
+            continue;
+        }
+
+        if bytes[cursor] == b'['
+            && let Some(end) = skip_lua_long_bracket(source, cursor)
+        {
+            cursor = end;
             continue;
         }
 
@@ -316,7 +327,9 @@ fn require_modules(source: &str) -> Vec<String> {
             }) {
                 cursor += 1;
             }
-            if &source[start..cursor] == "require" {
+            if &source[start..cursor] == "require"
+                && (start == 0 || bytes[start - 1] != b'.')
+            {
                 let mut argument = cursor;
                 while bytes.get(argument).is_some_and(|byte| byte.is_ascii_whitespace()) {
                     argument += 1;
@@ -338,6 +351,39 @@ fn require_modules(source: &str) -> Vec<String> {
         cursor += 1;
     }
     modules
+}
+
+fn skip_lua_long_bracket(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'[') {
+        return None;
+    }
+
+    let mut cursor = start + 1;
+    while bytes.get(cursor) == Some(&b'=') {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'[') {
+        return None;
+    }
+
+    let equals = cursor - start - 1;
+    cursor += 1;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b']' {
+            let mut close = cursor + 1;
+            let mut matched = 0;
+            while matched < equals && bytes.get(close) == Some(&b'=') {
+                close += 1;
+                matched += 1;
+            }
+            if matched == equals && bytes.get(close) == Some(&b']') {
+                return Some(close + 1);
+            }
+        }
+        cursor += 1;
+    }
+    Some(bytes.len())
 }
 
 fn skip_lua_string(source: &str, cursor: &mut usize) {
@@ -2004,6 +2050,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("instruction evaluation limit"));
+    }
+
+    #[test]
+    fn ignores_require_text_inside_long_comments_and_strings() {
+        let source = r#"
+            --[=[ require("./hyprviz/commented") ]=]
+            local text = [==[
+                require("./hyprviz/string")
+            ]==]
+            require("./hyprviz/active")
+        "#;
+        assert_eq!(
+            profile_name_from_lua(source),
+            Some("active".to_string())
+        );
     }
 
     #[test]
