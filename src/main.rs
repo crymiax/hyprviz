@@ -5,7 +5,7 @@ use rust_i18n::{available_locales, i18n, t};
 use std::{
     cell::RefCell,
     env, fs,
-    path::{Path, PathBuf},
+    path::Path,
     rc::Rc,
     time::Instant,
 };
@@ -21,6 +21,7 @@ mod gtk_converters;
 mod gui;
 mod guides;
 mod hyprland;
+mod lua_config;
 mod system_info;
 mod utils;
 mod widget;
@@ -107,19 +108,24 @@ fn build_ui(app: &Application) {
             }
         };
 
-        if !check_last_non_empty_line_contains(&config_str, "source = ./hyprviz") {
-            let mut parsed_config = mute_stdout(|| parse_config(&config_str));
+        let lua_config = crate::lua_config::is_lua_config_path(&config_path_full);
+        let has_integration = if lua_config {
+            crate::lua_config::has_hyprviz_require(&config_str)
+        } else {
+            check_last_non_empty_line_contains(&config_str, "source = ./hyprviz")
+        };
 
-            parsed_config.add_entry_headless("#", "Source for hyprviz");
-            parsed_config.add_entry_headless("source", "./hyprviz.conf");
+        if !has_integration {
+            let updated_config_str = if lua_config {
+                crate::lua_config::append_hyprviz_require(&config_str)
+            } else {
+                let mut parsed_config = mute_stdout(|| parse_config(&config_str));
+                parsed_config.add_entry_headless("#", "Source for hyprviz");
+                parsed_config.add_entry_headless("source", "./hyprviz.conf");
+                parsed_config.to_string()
+            };
 
-            let updated_config_str = parsed_config.to_string();
-
-            let hyprviz_path: PathBuf = config_path_full
-                .parent()
-                .map(|d| d.join("hyprviz.conf"))
-                .unwrap_or_else(|| PathBuf::from("./hyprviz.conf"));
-
+            let hyprviz_path = get_config_path(true, "Default");
             if hyprviz_path.exists() {
                 if !hyprviz_path.is_file() {
                     gui.borrow().custom_error_popup_critical(
@@ -144,8 +150,12 @@ fn build_ui(app: &Application) {
                     );
                 }
 
-                let default = "# hyprviz configuration (created automatically)\n\n";
-                if let Err(e) = atomic_write(&hyprviz_path, default) {
+                let default = if lua_config {
+                    "-- HyprViz managed Lua configuration.\n".to_string()
+                } else {
+                    "# hyprviz configuration (created automatically)\n\n".to_string()
+                };
+                if let Err(e) = atomic_write(&hyprviz_path, &default) {
                     gui.borrow().custom_error_popup_critical(
                         &t!("main.creating_included_file_failed"),
                         &t!(
@@ -160,12 +170,18 @@ fn build_ui(app: &Application) {
             let config_path_full_clone = config_path_full.clone();
             let gui_clone_confirm = Rc::clone(&gui);
             let gui_clone_cancel = Rc::clone(&gui);
+            let confirmation_text = if lua_config {
+                "HyprViz needs to add require(\"./hyprviz\") to your Lua configuration. Continue?"
+                    .to_string()
+            } else {
+                t!("main.confirm_modify_main_config_text").to_string()
+            };
             gui.borrow().show_confirmation_dialog(
                 &t!("main.confirm_modify_main_config"),
-                &t!("main.confirm_modify_main_config_text"),
+                &confirmation_text,
                 move || match atomic_write(&config_path_full_clone, &updated_config_str) {
                     Ok(()) => {
-                        println!("Added 'source = ./hyprviz.conf' to ~/{}", CONFIG_PATH);
+                        println!("Added the HyprViz include to {}", config_path_full_clone.display());
                         reload_hyprland();
                     }
                     Err(e) => {

@@ -5327,37 +5327,45 @@ impl ConfigWidget {
 
                 let read_only_path = get_config_path(false, profile);
                 let rw_path = get_config_path(true, profile);
-                let profile_path = if profile == "Default" {
+                let profile_path = if crate::lua_config::is_lua_config_path(&rw_path) {
+                    if profile == "Default" {
+                        "./hyprviz".to_string()
+                    } else {
+                        format!("./hyprviz/{}", profile)
+                    }
+                } else if profile == "Default" {
                     "./hyprviz.conf".to_string()
                 } else {
                     format!("./hyprviz/{}.conf", profile)
                 };
 
                 let read_only_config_raw = match fs::read_to_string(&read_only_path) {
-                    Ok(read_only_config) => read_only_config
-                        .lines()
-                        .filter(|line| {
-                            !line
-                                .trim_start()
-                                .starts_with(&format!("source = {}", profile_path))
-                        })
-                        .filter(|line| {
-                            !line
-                                .trim_start()
-                                .starts_with(&format!("source ={}", profile_path))
-                        })
-                        .filter(|line| {
-                            !line
-                                .trim_start()
-                                .contains(&format!("source= {}", profile_path))
-                        })
-                        .filter(|line| {
-                            !line
-                                .trim_start()
-                                .starts_with(&format!("source={}", profile_path))
-                        })
-                        .collect::<Vec<&str>>()
-                        .join("\n"),
+                    Ok(read_only_config) => {
+                        if crate::lua_config::is_lua_config_path(&read_only_path) {
+                            read_only_config
+                                .lines()
+                                .filter(|line| !(line.contains("require") && line.contains(&profile_path)))
+                                .collect::<Vec<&str>>()
+                                .join("\n")
+                        } else {
+                            read_only_config
+                                .lines()
+                                .filter(|line| {
+                                    !line.trim_start().starts_with(&format!("source = {}", profile_path))
+                                })
+                                .filter(|line| {
+                                    !line.trim_start().starts_with(&format!("source ={}", profile_path))
+                                })
+                                .filter(|line| {
+                                    !line.trim_start().contains(&format!("source= {}", profile_path))
+                                })
+                                .filter(|line| {
+                                    !line.trim_start().starts_with(&format!("source={}", profile_path))
+                                })
+                                .collect::<Vec<&str>>()
+                                .join("\n")
+                        }
+                    },
                     Err(_) => {
                         let error_label = Label::new(Some(&t!(
                             "widget.error_reading_",

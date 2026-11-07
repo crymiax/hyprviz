@@ -15,7 +15,7 @@
 **Fork** of [HyprGUI](https://github.com/MarkusVolk/hyprgui) — an unofficial GUI for configuring Hyprland, built with GTK4 and Rust. 🚀🦀<br>
 Comes with a custom [hyprparser](https://crates.io/crates/hyprparser) for Hyprland's configuration file. (Rust btw) 🦀
 
-> **Note:** Hyprland 0.55 is not supported yet.
+> **Lua configuration:** HyprViz embeds Lua 5.4 and executes configuration code (locals, functions, conditionals, loops, computed tables, `require()`, `dofile()`, and `loadfile()`) instead of statically parsing Lua source. It collects supported declarative `hl.*` calls for the GUI while keeping the main Lua file and user-authored code intact. The editor does not emulate live compositor state or run compositor dispatchers, plugins, timers, or event callbacks. For safe evaluation, general file IO is disabled, only read-only `os` helpers are exposed, and each evaluation is limited to 25 million VM instructions and 128 MiB of Lua memory. GUI-managed settings are stored separately in `hyprviz.lua`.
 
 ![Preview](.github/preview.png)
 
@@ -132,7 +132,7 @@ If you manage your NixOS configuration with flakes, add hyprviz as an input in y
 - [x] Add confirmation dialog for editing main hyprland.conf
 - [x] Add row actions (discard/remove) for individual options
 - [x] Optimize startup performance
-- [ ] Add support for lua config
+- [x] Add support for Lua 5.4 configuration
 - [ ] Add support for waybar, swaync, hyprlock...
 - [x] Improve GUI
 - [ ] Replace hyprparser with [hyprlang-rs](https://github.com/spinualexandru/hyprlang-rs)
