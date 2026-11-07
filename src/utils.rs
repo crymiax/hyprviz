@@ -442,7 +442,7 @@ pub fn get_current_profile(file_content: &str) -> String {
             if let Some(start_suffix_idx_relative) = line_after_prefix.find(suffix) {
                 let start_suffix_idx_absolute = start_profile_idx + start_suffix_idx_relative;
                 let end_suffix_idx_absolute = start_suffix_idx_absolute + suffix.len();
-                        let is_valid_ending = end_suffix_idx_absolute == line.len()
+                let is_valid_ending = end_suffix_idx_absolute == line.len()
                     || line[end_suffix_idx_absolute..]
                         .starts_with(|c: char| c.is_whitespace() || c == '#');
                 if is_valid_ending && start_profile_idx < start_suffix_idx_absolute {
