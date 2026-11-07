@@ -1523,6 +1523,29 @@ impl ConfigNode {
     }
 }
 
+fn strip_unquoted_comment(value: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character == '#' {
+            return &value[..index];
+        }
+    }
+
+    value
+}
+
 pub fn hyprlang_to_lua(source: &str) -> String {
     let mut root = ConfigNode::default();
     let mut directives = Vec::new();
@@ -1546,7 +1569,7 @@ pub fn hyprlang_to_lua(source: &str) -> String {
             continue;
         };
         let key = key.trim().to_string();
-        let value = value.split('#').next().unwrap_or(value).trim().to_string();
+        let value = strip_unquoted_comment(value).trim().to_string();
         if section_stack.is_empty() {
             directives.push((key, value));
         } else {
@@ -1656,7 +1679,7 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
         "env" => Some(format!(
             "hl.env({}, {})\n",
             lua_quote(parts.first()?),
-            lua_quote(parts.get(1).copied().unwrap_or(""))
+            lua_quote(&parts.get(1..).unwrap_or_default().join(","))
         )),
         key if key.starts_with("bind") => serialize_bind_directive(key, &parts)
             .or_else(|| Some(format!("hl.raw({})\n", lua_quote(&format!("{key} = {value}"))))),
@@ -1720,6 +1743,22 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn preserves_hashes_and_commas_inside_quoted_directive_values() {
+        let generated =
+            hyprlang_to_lua("env = GTK_THEME,\\\"Adwaita # dark, compact\\\"\\n");
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(&generated),
+            false,
+        )
+        .unwrap();
+        assert!(
+            parsed.contains("env = GTK_THEME,\\\"Adwaita # dark, compact\\\""),
+            "{parsed}"
+        );
     }
 
     #[test]
