@@ -5347,7 +5347,7 @@ impl ConfigWidget {
                                 .filter(|line| {
                                     let trimmed = line.trim_start();
                                     !(trimmed.starts_with("require")
-                                        && crate::lua_config::has_hyprviz_require(line))
+                                        && crate::lua_config::is_hyprviz_require_line(line))
                                 })
                                 .collect::<Vec<&str>>()
                                 .join("\n")
