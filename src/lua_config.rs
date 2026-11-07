@@ -1628,8 +1628,8 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
             lua_quote(parts.get(1).copied().unwrap_or(""))
         )),
         key if key.starts_with("bind") => serialize_bind_directive(key, &parts)
-            .or_else(|| Some(format!("hl.raw({})\\n", lua_quote(&format!("{key} = {value}"))))),
-        _ => Some(format!("hl.raw({})\\n", lua_quote(&format!("{key} = {value}")))),
+            .or_else(|| Some(format!("hl.raw({})\n", lua_quote(&format!("{key} = {value}"))))),
+        _ => Some(format!("hl.raw({})\n", lua_quote(&format!("{key} = {value}")))),
     }
 }
 
@@ -1693,9 +1693,9 @@ mod tests {
 
     #[test]
     fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
-        let generated = hyprlang_to_lua("exec-once = notify-send\\nunknown-setting = keep-me\\n");
-        assert!(generated.contains("hl.raw(\\\"exec-once = notify-send\\\")"));
-        assert!(generated.contains("hl.raw(\\\"unknown-setting = keep-me\\\")"));
+        let generated = hyprlang_to_lua("exec-once = notify-send\nunknown-setting = keep-me\n");
+        assert!(generated.contains("hl.raw(\\"exec-once = notify-send\\")"));
+        assert!(generated.contains("hl.raw(\\"unknown-setting = keep-me\\")"));
 
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
