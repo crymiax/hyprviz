@@ -25,6 +25,66 @@ pub fn has_hyprviz_require(source: &str) -> bool {
     require_modules(source).iter().any(|module| is_hyprviz_module(module))
 }
 
+/// True only when the line consists of a standalone HyprViz require statement.
+/// This lets the GUI hide/switch its managed include without deleting other Lua
+/// statements that happen to share a line with a require call.
+pub fn is_hyprviz_require_line(source: &str) -> bool {
+    let line = source.trim();
+    let bytes = line.as_bytes();
+    if !line.starts_with("require") {
+        return false;
+    }
+
+    let mut cursor = "require".len();
+    if bytes.get(cursor).is_some_and(|byte| {
+        byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'.'
+    }) {
+        return false;
+    }
+    while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        cursor += 1;
+    }
+
+    let parenthesized = if bytes.get(cursor) == Some(&b'(') {
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        true
+    } else {
+        false
+    };
+
+    let Some(module) = read_lua_string(line, &mut cursor) else {
+        return false;
+    };
+    if !is_hyprviz_module(&module) {
+        return false;
+    }
+
+    while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        cursor += 1;
+    }
+    if parenthesized {
+        if bytes.get(cursor) != Some(&b')') {
+            return false;
+        }
+        cursor += 1;
+    }
+    while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        cursor += 1;
+    }
+    if bytes.get(cursor) == Some(&b';') {
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            cursor += 1;
+        }
+    }
+
+    cursor == bytes.len()
+        || line[cursor..].starts_with("--")
+}
+
 pub fn append_hyprviz_require(source: &str) -> String {
     if has_hyprviz_require(source) {
         return source.to_string();
@@ -1869,6 +1929,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("instruction evaluation limit"));
+    }
+
+    #[test]
+    fn detects_only_standalone_managed_require_statements() {
+        assert!(is_hyprviz_require_line("require('./hyprviz')"));
+        assert!(is_hyprviz_require_line("  require('./hyprviz/profile'); -- managed"));
+        assert!(!is_hyprviz_require_line("require('./hyprviz'); print('keep this')"));
+        assert!(!is_hyprviz_require_line("local config = require('./hyprviz')"));
+        assert!(!is_hyprviz_require_line("object.require('./hyprviz')"));
     }
 
     #[test]
