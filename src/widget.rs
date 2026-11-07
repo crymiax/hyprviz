@@ -5345,7 +5345,9 @@ impl ConfigWidget {
                             read_only_config
                                 .lines()
                                 .filter(|line| {
-                                    !crate::lua_config::has_hyprviz_require(line)
+                                    let trimmed = line.trim_start();
+                                    !(trimmed.starts_with("require")
+                                        && crate::lua_config::has_hyprviz_require(line))
                                 })
                                 .collect::<Vec<&str>>()
                                 .join("\n")
