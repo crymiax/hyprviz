@@ -1694,8 +1694,8 @@ mod tests {
     #[test]
     fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
         let generated = hyprlang_to_lua("exec-once = notify-send\nunknown-setting = keep-me\n");
-        assert!(generated.contains("hl.raw(\\"exec-once = notify-send\\")"));
-        assert!(generated.contains("hl.raw(\\"unknown-setting = keep-me\\")"));
+        assert!(generated.contains("hl.raw(\"exec-once = notify-send\")"));
+        assert!(generated.contains("hl.raw(\"unknown-setting = keep-me\")"));
 
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
