@@ -153,7 +153,7 @@ fn build_ui(app: &Application) {
                 let default = if lua_config {
                     "-- HyprViz managed Lua configuration.\n".to_string()
                 } else {
-                    "# hyprviz configuration (created automatically)\\n\\n".to_string()
+                    "# hyprviz configuration (created automatically)\n\n".to_string()
                 };
                 if let Err(e) = atomic_write(&hyprviz_path, &default) {
                     gui.borrow().custom_error_popup_critical(
@@ -171,7 +171,7 @@ fn build_ui(app: &Application) {
             let gui_clone_confirm = Rc::clone(&gui);
             let gui_clone_cancel = Rc::clone(&gui);
             let confirmation_text = if lua_config {
-                "HyprViz needs to add require(\\"./hyprviz\\") to your Lua configuration. Continue?"
+                "HyprViz needs to add require(\"./hyprviz\") to your Lua configuration. Continue?"
                     .to_string()
             } else {
                 t!("main.confirm_modify_main_config_text").to_string()
