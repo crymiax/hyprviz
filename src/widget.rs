@@ -5344,23 +5344,33 @@ impl ConfigWidget {
                         if crate::lua_config::is_lua_config_path(&read_only_path) {
                             read_only_config
                                 .lines()
-                                .filter(|line| !(line.contains("require") && line.contains(&profile_path)))
+                                .filter(|line| {
+                                    !crate::lua_config::has_hyprviz_require(line)
+                                })
                                 .collect::<Vec<&str>>()
                                 .join("\n")
                         } else {
                             read_only_config
                                 .lines()
                                 .filter(|line| {
-                                    !line.trim_start().starts_with(&format!("source = {}", profile_path))
+                                    !line
+                                        .trim_start()
+                                        .starts_with(&format!("source = {}", profile_path))
                                 })
                                 .filter(|line| {
-                                    !line.trim_start().starts_with(&format!("source ={}", profile_path))
+                                    !line
+                                        .trim_start()
+                                        .starts_with(&format!("source ={}", profile_path))
                                 })
                                 .filter(|line| {
-                                    !line.trim_start().contains(&format!("source= {}", profile_path))
+                                    !line
+                                        .trim_start()
+                                        .contains(&format!("source= {}", profile_path))
                                 })
                                 .filter(|line| {
-                                    !line.trim_start().starts_with(&format!("source={}", profile_path))
+                                    !line
+                                        .trim_start()
+                                        .starts_with(&format!("source={}", profile_path))
                                 })
                                 .collect::<Vec<&str>>()
                                 .join("\n")
