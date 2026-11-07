@@ -402,7 +402,7 @@ pub fn update_source_line(config_path: &PathBuf, profile: &str) -> io::Result<()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let new_source = format!("require({module_literal})");
         let target_index = lines.iter().enumerate().rev().find_map(|(index, line)| {
-            crate::lua_config::has_hyprviz_require(line).then_some(index)
+            crate::lua_config::is_hyprviz_require_line(line).then_some(index)
         });
         if let Some(index) = target_index {
             lines[index] = new_source;
