@@ -1748,7 +1748,7 @@ mod tests {
     #[test]
     fn preserves_hashes_and_commas_inside_quoted_directive_values() {
         let generated =
-            hyprlang_to_lua("env = GTK_THEME,\\\"Adwaita # dark, compact\\\"\\n");
+            hyprlang_to_lua("env = GTK_THEME,\"Adwaita # dark, compact\"\n");
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
             Some(&generated),
@@ -1756,7 +1756,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            parsed.contains("env = GTK_THEME,\\\"Adwaita # dark, compact\\\""),
+            parsed.contains("env = GTK_THEME,\"Adwaita # dark, compact\""),
             "{parsed}"
         );
     }
