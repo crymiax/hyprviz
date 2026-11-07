@@ -97,7 +97,10 @@ fn execute_lua_config(
         let value: Value = os.get(name)?;
         safe_os.set(name, value)?;
     }
-    globals.set("os", safe_os)?;
+    globals.set("os", safe_os.clone())?;
+    let package: Table = globals.get("package")?;
+    let loaded_modules: Table = package.get("loaded")?;
+    loaded_modules.set("os", safe_os)?;
 
     // A malformed or accidental infinite loop must not hang the GTK main thread.
     // Count VM instructions across the main chunk and Lua-created coroutines.
@@ -1957,7 +1960,7 @@ mod tests {
 
         assert!(expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
-            Some("local home = os.getenv('HOME') or ''\nhl.config({ general = { gaps_in = #home } })"),
+            Some("local home = os.getenv('HOME') or ''\\nlocal os_module = require('os')\\nassert(os_module.execute == nil and os_module.remove == nil)\\nhl.config({ general = { gaps_in = #home } })"),
             false,
         ).is_ok());
     }
