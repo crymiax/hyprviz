@@ -1,5 +1,5 @@
 <div align='center'>
-
+**this fork covers hyprviz with lua support**
 [<img src="assets/hyprviz.svg" alt="HyprViz Logo" width="128">](https://github.com/timasoft/hyprviz)
 
 <h2>HyprViz</h2>
