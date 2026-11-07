@@ -1043,11 +1043,22 @@ along with this program; if not, see
         let history = self.history.clone();
 
         if !history.borrow().get_current_state().is_empty() {
-            let mut parsed_config = mute_stdout(|| parse_config(&config_str));
+            let config_str_for_parse = if crate::lua_config::is_lua_config_path(&path) {
+                crate::lua_config::lua_to_hyprlang(&config_str)
+            } else {
+                config_str.clone()
+            };
+            let mut parsed_config = mute_stdout(|| parse_config(&config_str_for_parse));
 
             self.apply_changes(&mut parsed_config);
 
-            let updated_config_str = parsed_config.to_string();
+            let updated_hyprlang = parsed_config.to_string();
+            let updated_config_str = if crate::lua_config::is_lua_config_path(&path) {
+                let generated = crate::lua_config::hyprlang_to_lua(&updated_hyprlang);
+                crate::lua_config::merge_managed_lua(&config_str, &generated)
+            } else {
+                updated_hyprlang
+            };
             let temp_path = path.with_extension("tmp");
 
             let result = atomic_write(&path, &updated_config_str);

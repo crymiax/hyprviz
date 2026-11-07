@@ -1,5 +1,5 @@
 <div align='center'>
-
+**this fork covers hyprviz with lua support**
 [<img src="assets/hyprviz.svg" alt="HyprViz Logo" width="128">](https://github.com/timasoft/hyprviz)
 
 <h2>HyprViz</h2>
@@ -12,7 +12,7 @@
 **Fork** of [HyprGUI](https://github.com/MarkusVolk/hyprgui) — an unofficial GUI for configuring Hyprland, built with GTK4 and Rust. 🚀🦀<br>
 Comes with a custom [hyprparser](https://crates.io/crates/hyprparser) for Hyprland's configuration file. (Rust btw) 🦀
 
-> **Note:** Hyprland 0.55 is not supported yet.
+> **Lua configuration:** HyprViz can read and edit declarative Lua configurations introduced in Hyprland 0.55. It understands static `hl.config`, `hl.monitor`, `hl.env`, supported `hl.bind` dispatchers, `hl.window_rule`, `hl.animation`, and `hl.gesture` calls, including local modules loaded with `require()`. Dynamic Lua expressions and custom callbacks are not evaluated; they remain in the original files. GUI-managed settings are stored separately in `hyprviz.lua`.
 
 ![Preview](.github/preview.png)
 
@@ -129,7 +129,7 @@ If you manage your NixOS configuration with flakes, add hyprviz as an input in y
 - [x] Add confirmation dialog for editing main hyprland.conf
 - [x] Add row actions (discard/remove) for individual options
 - [x] Optimize startup performance
-- [ ] Add support for lua config
+- [x] Add support for declarative Lua config
 - [ ] Add support for waybar, swaync, hyprlock...
 - [x] Improve GUI
 - [ ] Replace hyprparser with [hyprlang-rs](https://github.com/spinualexandru/hyprlang-rs)
