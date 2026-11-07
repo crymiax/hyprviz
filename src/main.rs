@@ -181,7 +181,10 @@ fn build_ui(app: &Application) {
                 &confirmation_text,
                 move || match atomic_write(&config_path_full_clone, &updated_config_str) {
                     Ok(()) => {
-                        println!("Added the HyprViz include to {}", config_path_full_clone.display());
+                        println!(
+                            "Added the HyprViz include to {}",
+                            config_path_full_clone.display()
+                        );
                         reload_hyprland();
                     }
                     Err(e) => {
