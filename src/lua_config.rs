@@ -1746,12 +1746,17 @@ fn lua_key(key: &str) -> String {
 }
 
 fn lua_literal(value: &str) -> String {
-    let value = unquote_hyprlang(value);
-    if value == "true"
-        || value == "false"
-        || value == "nil"
-        || value.parse::<i64>().is_ok()
-        || value.parse::<f64>().is_ok()
+    let original = value.trim();
+    let bytes = original.as_bytes();
+    let was_quoted = bytes.len() >= 2
+        && matches!((bytes[0], bytes[bytes.len() - 1]), (b'"', b'"') | (b'\'', b'\''));
+    let value = unquote_hyprlang(original);
+    if !was_quoted
+        && (value == "true"
+            || value == "false"
+            || value == "nil"
+            || value.parse::<i64>().is_ok()
+            || value.parse::<f64>().is_ok())
     {
         value
     } else {
@@ -2156,10 +2161,14 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
             "hl.on(\"hyprland.start\", function() hl.exec_cmd({}) end)\n",
             lua_quote(&unquote_hyprlang(value))
         )),
-        "plugin" => Some(format!(
-            "hl.plugin.load({})\n",
-            lua_quote(&unquote_hyprlang(value))
-        )),
+        "plugin" => {
+            let path = unquote_hyprlang(value);
+            if path.is_empty() {
+                None
+            } else {
+                Some(format!("hl.plugin.load({})\n", lua_quote(&path)))
+            }
+        },
         "bezier" => serialize_bezier_directive(value),
         "animation" => serialize_animation_directive(value),
         "workspace" => serialize_workspace_directive(value),
@@ -2415,6 +2424,14 @@ mod tests {
     }
 
     #[test]
+    fn keeps_quoted_boolean_and_numeric_values_as_strings() {
+        assert_eq!(lua_literal("\"true\""), "\"true\"");
+        assert_eq!(lua_literal("\"123\""), "\"123\"");
+        assert_eq!(lua_literal("true"), "true");
+        assert_eq!(lua_literal("123"), "123");
+    }
+
+    #[test]
     fn refuses_to_drop_unmapped_legacy_directives() {
         let error = hyprlang_to_lua(
             "exec-once = notify-send\nunknown-setting = keep-me\n",
@@ -2441,7 +2458,7 @@ mod tests {
     #[test]
     fn serializes_plugin_and_dbus_environment_directives() {
         let generated = hyprlang_to_lua(
-            "plugin = /home/user/plugin.so\\nenv = GTK_THEME,Adwaita,true\\n",
+            "plugin = /home/user/plugin.so\nenv = GTK_THEME,Adwaita,true\n",
         )
         .unwrap();
         assert!(generated.contains("hl.plugin.load("));
