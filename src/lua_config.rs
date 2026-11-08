@@ -894,11 +894,80 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "timer",
         lua.create_function(|lua, _: MultiValue| create_handle(lua))?,
     )?;
+    let submap_output = Rc::clone(&output);
+    let submap_stack = Rc::new(RefCell::new(Vec::<String>::new()));
+    let submap_stack_for_callback = Rc::clone(&submap_stack);
     hl.set(
         "define_submap",
-        // The callback is retained in the user's Lua source, but is not invoked
-        // here: it belongs to live compositor input state and can register binds.
-        lua.create_function(|lua, _: MultiValue| create_handle(lua))?,
+        lua.create_function(move |_, args: MultiValue| {
+            let mut args = args.into_iter();
+            let name = match args.next() {
+                Some(Value::String(name)) => name.to_string_lossy().to_string(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "hl.define_submap: expected a submap name".to_string(),
+                    ));
+                }
+            };
+            if name.is_empty() || name.contains([',', '\\n', '\\r']) {
+                return Err(mlua::Error::RuntimeError(
+                    "hl.define_submap: invalid submap name".to_string(),
+                ));
+            }
+
+            let second = args.next();
+            let (reset, callback) = match second {
+                Some(Value::Function(callback)) => (None, callback),
+                Some(Value::String(reset)) => {
+                    let reset = reset.to_string_lossy().to_string();
+                    if reset.is_empty() || reset.contains([',', '\\n', '\\r']) {
+                        return Err(mlua::Error::RuntimeError(
+                            "hl.define_submap: invalid reset submap name".to_string(),
+                        ));
+                    }
+                    let callback = match args.next() {
+                        Some(Value::Function(callback)) => callback,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "hl.define_submap: expected a callback after the reset name"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    (Some(reset), callback)
+                }
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "hl.define_submap: expected a callback or reset name and callback"
+                            .to_string(),
+                    ));
+                }
+            };
+            if args.next().is_some() {
+                return Err(mlua::Error::RuntimeError(
+                    "hl.define_submap: too many arguments".to_string(),
+                ));
+            }
+
+            if let Some(reset) = reset {
+                append_output(
+                    &submap_output,
+                    format!("submap = {name},{reset}"),
+                );
+            }
+            append_output(&submap_output, format!("submap = {name}"));
+            submap_stack_for_callback.borrow_mut().push(name);
+
+            let result = callback.call::<()>(());
+            let parent = {
+                let mut stack = submap_stack_for_callback.borrow_mut();
+                stack.pop();
+                stack.last().cloned().unwrap_or_else(|| "reset".to_string())
+            };
+            append_output(&submap_output, format!("submap = {parent}"));
+            result?;
+            Ok(())
+        })?,
     )?;
     hl.set(
         "is_key_down",
@@ -2948,6 +3017,43 @@ mod tests {
             parsed.contains("monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb"),
             "{parsed}"
         );
+    }
+
+    #[test]
+    fn evaluates_submap_callbacks_and_restores_parent_context() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"
+                hl.bind("SUPER + R", hl.dsp.submap("resize"))
+                hl.define_submap("resize", function()
+                    hl.bind("left", hl.dsp.window.resize({ x = -10, y = 0 }))
+                    hl.define_submap("fine", "resize", function()
+                        hl.bind("j", hl.dsp.window.resize({ x = 0, y = 1 }))
+                    end)
+                    hl.bind("escape", hl.dsp.submap("reset"))
+                end)
+                "#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("bind = SUPER,R,submap,resize"), "{parsed}");
+        assert!(parsed.contains("submap = resize\\nbind = ,left,resizeactive,-10,0"), "{parsed}");
+        assert!(parsed.contains("submap = fine,resize\\nsubmap = fine"), "{parsed}");
+        assert!(parsed.contains("submap = resize\\nbind = ,escape,submap,reset"), "{parsed}");
+        assert!(parsed.ends_with("submap = reset\\n"), "{parsed}");
+    }
+
+    #[test]
+    fn rejects_invalid_submap_declarations() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.define_submap("resize", "reset")"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("hl.define_submap"), "{error}");
     }
 
     #[test]
