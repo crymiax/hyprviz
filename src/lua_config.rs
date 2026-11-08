@@ -1255,6 +1255,26 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
 }
 
 fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Option<String> {
+    const ALLOWED_OPTIONS: &[&str] = &[
+        "locked",
+        "repeating",
+        "release",
+        "non_consuming",
+        "auto_consuming",
+        "transparent",
+        "ignore_mods",
+        "dont_inhibit",
+        "long_press",
+        "submap_universal",
+        "mouse",
+        "click",
+        "drag",
+        "description",
+        "desc",
+        "allow_input_capture",
+        "device",
+    ];
+
     let descriptor = match dispatcher {
         Value::Table(table) => lua_table_to_value(table, 0).ok()?,
         Value::Function(_) => return None,
@@ -1274,34 +1294,105 @@ fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Opt
     let key_name = key_parts.last()?.to_string();
     let modifiers = key_parts[..key_parts.len() - 1].join("_");
 
-    let mut directive = "bind".to_string();
-    if let Some(options) = options.and_then(|value| match value {
-        Value::Table(table) => lua_table_to_value(table, 0).ok(),
-        _ => None,
-    }) {
-        if table_bool(&options, "locked") == Some(true) {
-            directive.push('l');
-        }
-        if table_bool(&options, "repeating") == Some(true)
-            || table_bool(&options, "repeat") == Some(true)
-        {
-            directive.push('e');
-        }
-        if table_bool(&options, "release") == Some(true) {
-            directive.push('r');
-        }
-        if table_bool(&options, "mouse") == Some(true) {
-            directive.push('m');
-        }
-        if table_bool(&options, "non_consuming") == Some(true) {
-            directive.push('n');
-        }
-        if table_bool(&options, "submap_universal") == Some(true) {
-            directive.push('s');
-        }
+    let options = match options {
+        Some(Value::Table(table)) => lua_table_to_value(table, 0).ok()?,
+        Some(Value::Nil) | None => LuaValue::Table(Vec::new()),
+        _ => return None,
+    };
+    if !table_has_only_keys(&options, ALLOWED_OPTIONS) {
+        return None;
     }
 
-    let mut fields = vec![modifiers, key_name, dispatcher_name];
+    // The legacy syntax supports the common bind flags. Per-device Lua binds
+    // carry a list/table payload that cannot be represented by a plain bind
+    // line, so refuse them instead of silently widening their scope.
+    if table_field(&options, "device").is_some() {
+        return None;
+    }
+
+    let enabled = |name: &str| table_bool(&options, name) == Some(true);
+    let description = match (
+        table_string(&options, "description"),
+        table_string(&options, "desc"),
+    ) {
+        (Some(_), Some(_)) => return None,
+        (Some(description), None) | (None, Some(description)) => Some(description),
+        (None, None) => None,
+    };
+    if description.as_deref().is_some_and(|value| value.contains(',')) {
+        return None;
+    }
+
+    let repeating = enabled("repeating");
+    let locked = enabled("locked");
+    let release = enabled("release");
+    let long_press = enabled("long_press");
+    let click = enabled("click");
+    let drag = enabled("drag");
+    let mouse = enabled("mouse");
+
+    if click && drag {
+        return None;
+    }
+    if repeating && (release || long_press || click || drag) {
+        return None;
+    }
+    if mouse && (repeating || release || locked || click || drag) {
+        return None;
+    }
+
+    let mut directive = "bind".to_string();
+    if locked {
+        directive.push('l');
+    }
+    if release || click || drag {
+        directive.push('r');
+    }
+    if repeating {
+        directive.push('e');
+    }
+    if mouse {
+        directive.push('m');
+    }
+    if enabled("non_consuming") {
+        directive.push('n');
+    }
+    if enabled("auto_consuming") {
+        directive.push('a');
+    }
+    if enabled("transparent") {
+        directive.push('t');
+    }
+    if enabled("ignore_mods") {
+        directive.push('i');
+    }
+    if enabled("dont_inhibit") {
+        directive.push('p');
+    }
+    if long_press {
+        directive.push('o');
+    }
+    if enabled("submap_universal") {
+        directive.push('u');
+    }
+    if click {
+        directive.push('c');
+    }
+    if drag {
+        directive.push('g');
+    }
+    if description.is_some() {
+        directive.push('d');
+    }
+    if enabled("allow_input_capture") {
+        directive.push('x');
+    }
+
+    let mut fields = vec![modifiers, key_name];
+    if let Some(description) = description {
+        fields.push(description);
+    }
+    fields.push(dispatcher_name);
     fields.append(&mut dispatcher_args);
     Some(format!("{directive} = {}", fields.join(",")))
 }
@@ -2825,6 +2916,58 @@ mod tests {
             parsed.contains("monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb"),
             "{parsed}"
         );
+    }
+
+    #[test]
+    fn serializes_all_legacy_representable_lua_bind_options() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"
+                hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), {
+                    transparent = true,
+                    ignore_mods = true,
+                    dont_inhibit = true,
+                    auto_consuming = true,
+                    description = "Open terminal",
+                })
+                hl.bind("SUPER + W", hl.dsp.exec_cmd("kitty"), {
+                    long_press = true,
+                })
+                hl.bind("SUPER + mouse:272", hl.dsp.window.drag(), {
+                    mouse = true,
+                })
+                "#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(
+            parsed.contains("bindtapdx = SUPER,Q,Open terminal,exec,kitty")
+                || parsed.contains("bindtapxd = SUPER,Q,Open terminal,exec,kitty"),
+            "{parsed}"
+        );
+        assert!(parsed.contains("bindo = SUPER,W,exec,kitty"), "{parsed}");
+        assert!(parsed.contains("bindm = SUPER,mouse:272,dragwindow"), "{parsed}");
+    }
+
+    #[test]
+    fn rejects_unrepresentable_bind_options_and_invalid_flag_combinations() {
+        for source in [
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { device = { list = { "kbd" } } })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { made_up = true })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { repeating = true, long_press = true })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { click = true, drag = true })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { description = "bad, description" })"#,
+        ] {
+            let error = expand_lua_config(
+                Path::new("/tmp/hyprland.lua"),
+                Some(source),
+                false,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("hl.bind"), "{source}: {error}");
+        }
     }
 
     #[test]
