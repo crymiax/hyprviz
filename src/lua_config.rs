@@ -909,7 +909,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
                     ));
                 }
             };
-            if name.is_empty() || name.contains([',', '\\n', '\\r']) {
+            if name.is_empty() || name.chars().any(|ch| matches!(ch, ',' | '\n' | '\r')) {
                 return Err(mlua::Error::RuntimeError(
                     "hl.define_submap: invalid submap name".to_string(),
                 ));
@@ -920,7 +920,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
                 Some(Value::Function(callback)) => (None, callback),
                 Some(Value::String(reset)) => {
                     let reset = reset.to_string_lossy().to_string();
-                    if reset.is_empty() || reset.contains([',', '\\n', '\\r']) {
+                    if reset.is_empty() || reset.chars().any(|ch| matches!(ch, ',' | '\n' | '\r')) {
                         return Err(mlua::Error::RuntimeError(
                             "hl.define_submap: invalid reset submap name".to_string(),
                         ));
@@ -3039,10 +3039,10 @@ mod tests {
         )
         .unwrap();
         assert!(parsed.contains("bind = SUPER,R,submap,resize"), "{parsed}");
-        assert!(parsed.contains("submap = resize\\nbind = ,left,resizeactive,-10,0"), "{parsed}");
-        assert!(parsed.contains("submap = fine,resize\\nsubmap = fine"), "{parsed}");
-        assert!(parsed.contains("submap = resize\\nbind = ,escape,submap,reset"), "{parsed}");
-        assert!(parsed.ends_with("submap = reset\\n"), "{parsed}");
+        assert!(parsed.contains("submap = resize\nbind = ,left,resizeactive,-10,0"), "{parsed}");
+        assert!(parsed.contains("submap = fine,resize\nsubmap = fine"), "{parsed}");
+        assert!(parsed.contains("submap = resize\nbind = ,escape,submap,reset"), "{parsed}");
+        assert!(parsed.ends_with("submap = reset\n"), "{parsed}");
     }
 
     #[test]
