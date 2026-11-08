@@ -1490,9 +1490,8 @@ fn table_string(table: &LuaValue, key: &str) -> Option<String> {
 }
 
 fn table_bool(table: &LuaValue, key: &str) -> Option<bool> {
-    match table_string(table, key)?.as_str() {
-        "true" | "1" => Some(true),
-        "false" | "0" => Some(false),
+    match table_field(table, key)? {
+        LuaValue::Scalar(LuaScalar::Boolean(value)) => Some(*value),
         _ => None,
     }
 }
@@ -1614,7 +1613,10 @@ fn emit_config_table(table: &LuaValue, path: &mut Vec<String>, lines: &mut Vec<S
         let mut full_path = path.clone();
         full_path.extend(key.split('.').map(str::to_string));
         match value {
-            LuaValue::Table(children) if children.iter().any(|(key, _)| key.is_some()) => {
+            LuaValue::Table(children)
+                if children.iter().any(|(key, _)| key.is_some())
+                    && value_to_hyprlang(value).is_none() =>
+            {
                 emit_config_section(children, &full_path, lines);
             }
             other => {
@@ -2458,6 +2460,28 @@ mod tests {
         assert!(
             parsed.contains("env = GTK_THEME,\"Adwaita # dark, compact\""),
             "{parsed}"
+        );
+    }
+
+    #[test]
+    fn preserves_lua_scalar_types_and_string_config_literals() {
+        assert_eq!(
+            lua_value_to_ml_value(
+                &Lua::new(),
+                &LuaValue::Scalar(LuaScalar::String("123".to_string())),
+                0,
+            )
+            .unwrap()
+            .type_name(),
+            "string"
+        );
+        assert_eq!(
+            config_value_to_hyprlang(&LuaValue::Scalar(LuaScalar::String("true".to_string()))),
+            Some("\\\"true\\\"".to_string())
+        );
+        assert_eq!(
+            config_value_to_hyprlang(&LuaValue::Scalar(LuaScalar::Boolean(true))),
+            Some("true".to_string())
         );
     }
 
