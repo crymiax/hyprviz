@@ -3129,13 +3129,12 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("config directory"), "{error}");
 
-        let error = expand_lua_config(
+        let sandbox_check = expand_lua_config(
             &config_dir.join("hyprland.lua"),
-            Some("assert(package.loadlib == nil); assert(package.cpath == '')"),
+            Some("assert(package.loadlib == nil); assert(package.cpath == ''); assert(package.searchers[3] == nil)"),
             false,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("assertion failed"), "{error}");
+        );
+        assert!(sandbox_check.is_ok(), "{sandbox_check:?}");
         let _ = fs::remove_dir_all(dir);
     }
 
