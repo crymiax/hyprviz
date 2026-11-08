@@ -55,7 +55,7 @@ HyprViz stores GUI-managed values in `hyprviz.lua` and additional profiles in `h
 
 The editor is a configuration evaluator, not a running compositor. Live window, workspace and monitor queries return empty or `nil` values. Dispatcher calls, plugins, timers and ordinary event callbacks are not run. The `hyprland.start` callback is evaluated only to collect startup `hl.exec_cmd()` entries; these become `exec-once` directives and are never launched by the editor.
 
-For safer evaluation, general-purpose `io` access is disabled, only read-only `os` helpers are exposed, and each config evaluation is capped at 128 MiB of Lua memory and 25 million VM instructions. Lua 5.4 is built from vendored sources, so a system Lua installation is not required.
+For safer evaluation, general-purpose `io` access is disabled, native C-module loading is disabled, and `require()`, `dofile()` and `loadfile()` can read Lua modules only inside the Hyprland configuration directory. The exposed `os` table contains read-only time helpers and a limited `getenv()` allowlist. Each evaluation is capped at 128 MiB of Lua memory and 25 million VM instructions. Lua 5.4 is built from vendored sources, so a system Lua installation is not required.
 
 ## Installation
 
