@@ -157,7 +157,10 @@ fn execute_lua_config(
     // Keep the complete Lua language/runtime, but remove general-purpose IO.
     // The editor loads config modules through the restricted loader below.
     // Preserve read-only OS helpers commonly used by configs (not execute/remove/rename).
-    let lua = Lua::new_with(StdLib::ALL_SAFE & !StdLib::IO, LuaOptions::new())?;
+    let lua = Lua::new_with(
+        StdLib::ALL_SAFE & !StdLib::IO & !StdLib::DEBUG,
+        LuaOptions::new(),
+    )?;
     // Keep pathological table/string allocations from exhausting the host process.
     lua.set_memory_limit(128 * 1024 * 1024)?;
     let globals = lua.globals();
@@ -3180,7 +3183,7 @@ mod tests {
 
         assert!(expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
-            Some("local home = os.getenv('HOME') or ''\\nlocal os_module = require('os')\\nassert(os_module.execute == nil and os_module.remove == nil)\\nhl.config({ general = { gaps_in = #home } })"),
+            Some("assert(io == nil and debug == nil)\\nlocal home = os.getenv('HOME') or ''\\nlocal os_module = require('os')\\nassert(os_module.execute == nil and os_module.remove == nil)\\nhl.config({ general = { gaps_in = #home } })"),
             false,
         ).is_ok());
     }
