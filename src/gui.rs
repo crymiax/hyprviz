@@ -1063,7 +1063,16 @@ along with this program; if not, see
 
             let updated_hyprlang = parsed_config.to_string();
             let updated_config_str = if crate::lua_config::is_lua_config_path(&path) {
-                let generated = crate::lua_config::hyprlang_to_lua(&updated_hyprlang);
+                let generated = match crate::lua_config::hyprlang_to_lua(&updated_hyprlang) {
+                    Ok(generated) => generated,
+                    Err(error) => {
+                        self.custom_error_popup(
+                            &t!("gui.reading_failed"),
+                            &format!("Lua migration was not saved: {error}"),
+                        );
+                        return;
+                    }
+                };
                 crate::lua_config::merge_managed_lua(&config_str, &generated)
             } else {
                 updated_hyprlang
