@@ -1212,6 +1212,20 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         return Some(("movecurrentworkspacetomonitor".to_string(), vec![monitor]));
     }
 
+    if name == "window.fullscreen_state" {
+        let selector = args.first()?;
+        if table_bool(selector, "layout_aware") == Some(false) {
+            return None;
+        }
+        let internal = table_string(selector, "internal")?;
+        let client = table_string(selector, "client")?;
+        let mut values = vec![internal, client];
+        if let Some(action) = table_string(selector, "action") {
+            values.push(action);
+        }
+        return Some(("fullscreenstate".to_string(), values));
+    }
+
     if name == "focus" {
         let selector = args.first()?;
         if let Some(workspace) = table_string(selector, "workspace") {
@@ -2682,6 +2696,37 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("windowrulev2 ="), "{parsed}");
         assert!(parsed.contains("layerrule ="), "{parsed}");
+    }
+
+    #[test]
+    fn serializes_fullscreen_state_api_descriptors_in_argument_order() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"hl.bind("SUPER + F", hl.dsp.window.fullscreen_state({
+                    internal = 1,
+                    client = 2,
+                    action = "toggle"
+                }))"#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("fullscreenstate,1,2,toggle"), "{parsed}");
+
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"hl.bind("SUPER + F", hl.dsp.window.fullscreen_state({
+                    internal = 1,
+                    client = 2,
+                    layout_aware = false
+                }))"#,
+            ),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot be represented"), "{error}");
     }
 
     #[test]
