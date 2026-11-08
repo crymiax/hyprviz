@@ -537,9 +537,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "monitor",
         lua.create_function(move |_, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = monitor_to_hyprlang(&value) {
-                append_output(&monitor_output, line);
-            }
+            let line = monitor_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.monitor: invalid monitor specification".to_string())
+            })?;
+            append_output(&monitor_output, line);
             Ok(())
         })?,
     )?;
@@ -549,25 +550,31 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "env",
         lua.create_function(move |_, args: MultiValue| {
             let mut args = args.into_iter();
-            let name = args.next().as_ref().and_then(lua_value_as_string);
-            let value = args.next().as_ref().and_then(lua_value_as_string);
+            let name = args
+                .next()
+                .as_ref()
+                .and_then(lua_value_as_string)
+                .ok_or_else(|| mlua::Error::RuntimeError("hl.env: expected a variable name".to_string()))?;
+            let value = args
+                .next()
+                .as_ref()
+                .and_then(lua_value_as_string)
+                .ok_or_else(|| mlua::Error::RuntimeError("hl.env: expected a variable value".to_string()))?;
             let dbus = args.next().as_ref().and_then(|value| match value {
                 Value::Boolean(value) => Some(*value),
                 Value::Integer(value) => Some(*value != 0),
                 _ => None,
             }).unwrap_or(false);
-            if let (Some(name), Some(value)) = (name, value) {
-                let value = if value.contains(',') || value.contains('#') {
-                    format!(
-                        "\"{}\"",
-                        value.replace('\\', "\\\\").replace('"', "\\\"")
-                    )
-                } else {
-                    value
-                };
-                let dbus = if dbus { ",true" } else { "" };
-                append_output(&env_output, format!("env = {name},{value}{dbus}"));
-            }
+            let value = if value.contains(',') || value.contains('#') {
+                format!(
+                    "\"{}\"",
+                    value.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            } else {
+                value
+            };
+            let dbus = if dbus { ",true" } else { "" };
+            append_output(&env_output, format!("env = {name},{value}{dbus}"));
             Ok(())
         })?,
     )?;
@@ -577,14 +584,22 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "bind",
         lua.create_function(move |lua, args: MultiValue| {
             let mut args = args.into_iter();
-            let key = args.next().as_ref().and_then(lua_value_as_string);
-            let dispatcher = args.next();
+            let key = args
+                .next()
+                .as_ref()
+                .and_then(lua_value_as_string)
+                .ok_or_else(|| mlua::Error::RuntimeError("hl.bind: expected a key string".to_string()))?;
+            let dispatcher = args.next().ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.bind: expected a dispatcher".to_string())
+            })?;
             let options = args.next();
-            if let (Some(key), Some(dispatcher)) = (key, dispatcher)
-                && let Some(line) = bind_to_hyprlang(&key, dispatcher, options)
-            {
-                append_output(&bind_output, line);
-            }
+            let line = bind_to_hyprlang(&key, dispatcher, options).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "hl.bind: dispatcher for key '{}' cannot be represented by Hyprland's legacy config parser",
+                    key
+                ))
+            })?;
+            append_output(&bind_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -598,10 +613,11 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>();
-            if let Some(key_name) = key_parts.last() {
-                let modifiers = key_parts[..key_parts.len() - 1].join("_");
-                append_output(&unbind_output, format!("unbind = {modifiers},{key_name}"));
-            }
+            let key_name = key_parts.last().ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.unbind: expected a non-empty key".to_string())
+            })?;
+            let modifiers = key_parts[..key_parts.len() - 1].join("_");
+            append_output(&unbind_output, format!("unbind = {modifiers},{key_name}"));
             Ok(())
         })?,
     )?;
@@ -611,9 +627,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "window_rule",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = window_rule_to_hyprlang(&value) {
-                append_output(&rule_output, line);
-            }
+            let line = window_rule_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.window_rule: invalid or unsupported rule specification".to_string())
+            })?;
+            append_output(&rule_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -623,9 +640,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "layer_rule",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = layer_rule_to_hyprlang(&value) {
-                append_output(&layer_output, line);
-            }
+            let line = layer_rule_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.layer_rule: invalid or unsupported rule specification".to_string())
+            })?;
+            append_output(&layer_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -635,9 +653,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "workspace_rule",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = workspace_rule_to_hyprlang(&value) {
-                append_output(&workspace_output, line);
-            }
+            let line = workspace_rule_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.workspace_rule: invalid or unsupported rule specification".to_string())
+            })?;
+            append_output(&workspace_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -647,9 +666,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "animation",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = animation_to_hyprlang(&value) {
-                append_output(&animation_output, line);
-            }
+            let line = animation_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.animation: invalid or unsupported animation specification".to_string())
+            })?;
+            append_output(&animation_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -659,9 +679,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "gesture",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = gesture_to_hyprlang(&value) {
-                append_output(&gesture_output, line);
-            }
+            let line = gesture_to_hyprlang(&value).ok_or_else(|| {
+                mlua::Error::RuntimeError("hl.gesture: invalid or unsupported gesture specification".to_string())
+            })?;
+            append_output(&gesture_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -671,9 +692,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "curve",
         lua.create_function(move |_, (name, definition): (String, Table)| {
             let value = lua_table_to_value(definition, 0)?;
-            if let Some(line) = curve_to_hyprlang(&name, &value) {
-                append_output(&curve_output, line);
-            }
+            let line = curve_to_hyprlang(&name, &value).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!("hl.curve: invalid curve '{}'", name))
+            })?;
+            append_output(&curve_output, line);
             Ok(())
         })?,
     )?;
@@ -735,14 +757,18 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
     hl.set(
         "exec_cmd",
         lua.create_function(move |_, args: MultiValue| {
-            if let Some(command) = args.into_iter().next().as_ref().and_then(lua_value_as_string) {
-                let directive = if exec_startup_depth.get() > 0 {
-                    "exec-once"
-                } else {
-                    "exec"
-                };
-                append_output(&exec_output, format!("{directive} = {command}"));
-            }
+            let command = args
+                .into_iter()
+                .next()
+                .as_ref()
+                .and_then(lua_value_as_string)
+                .ok_or_else(|| mlua::Error::RuntimeError("hl.exec_cmd: expected a command string".to_string()))?;
+            let directive = if exec_startup_depth.get() > 0 {
+                "exec-once"
+            } else {
+                "exec"
+            };
+            append_output(&exec_output, format!("{directive} = {command}"));
             Ok(())
         })?,
     )?;
@@ -2573,6 +2599,28 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("windowrulev2 ="), "{parsed}");
         assert!(parsed.contains("layerrule ="), "{parsed}");
+    }
+
+    #[test]
+    fn rejects_unsupported_bind_dispatchers_instead_of_ignoring_them() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.bind("SUPER + Q", hl.dsp.window.fullscreen_state({ internal = 1, client = 2 }))"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot be represented"), "{error}");
+    }
+
+    #[test]
+    fn rejects_invalid_rule_specs_instead_of_ignoring_them() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.layer_rule({ match = { namespace = "panel" }, unsupported = true })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("hl.layer_rule"), "{error}");
     }
 
     #[test]
