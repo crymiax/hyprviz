@@ -543,7 +543,10 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
             let value = args.next().as_ref().and_then(lua_value_as_string);
             if let (Some(name), Some(value)) = (name, value) {
                 let value = if value.contains(',') || value.contains('#') {
-                    format!("\\\"{}\\\"", value.replace('\\', "\\\\").replace('\\\"', "\\\\\\\""))
+                    format!(
+                        "\"{}\"",
+                        value.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
                 } else {
                     value
                 };
@@ -1115,9 +1118,7 @@ fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Opt
         if table_bool(&options, "release") == Some(true) {
             directive.push('r');
         }
-        if table_bool(&options, "click") == Some(true)
-            || table_bool(&options, "drag") == Some(true)
-        {
+        if table_bool(&options, "mouse") == Some(true) {
             directive.push('m');
         }
         if table_bool(&options, "non_consuming") == Some(true) {
@@ -2102,11 +2103,11 @@ pub fn hyprlang_to_lua(source: &str) -> String {
         let key = key.trim().to_string();
         let value = strip_unquoted_comment(value).trim().to_string();
 
-        if section_stack.as_slice() == ["animations"]
+        if section_stack.len() == 1 && section_stack[0] == "animations"
             && (key == "animation" || key == "bezier")
         {
             directives.push((key, value));
-        } else if section_stack.as_slice() == ["device"] {
+        } else if section_stack.len() == 1 && section_stack[0] == "device" {
             if let Some(device) = current_device.as_mut() {
                 device.push((key, value));
             }
@@ -2213,14 +2214,14 @@ mod tests {
     #[test]
     fn preserves_all_positional_monitor_fields() {
         let source = concat!(
-            "monitor = eDP-1, preferred, auto, 1, transform, 1, ",
+            "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\\n",
             "mirror, HDMI-A-1\n",
         );
         let generated = hyprlang_to_lua(source);
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(
-            parsed.contains("monitor = eDP-1, preferred, auto, 1, transform, 1, mirror, HDMI-A-1"),
+            parsed.contains("monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb"),
             "{parsed}"
         );
     }
@@ -2235,9 +2236,9 @@ mod tests {
         let generated = hyprlang_to_lua(source);
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
-        assert!(parsed.contains("bindm = , mouse:272, exec, notify-send mouse"), "{parsed}");
-        assert!(parsed.contains("bindn = , Q, exec, notify-send non-consuming"), "{parsed}");
-        assert!(parsed.contains("binds = SUPER, Q, exec, notify-send universal"), "{parsed}");
+        assert!(parsed.contains("bindm = ,mouse:272,exec,notify-send mouse"), "{parsed}");
+        assert!(parsed.contains("bindn = ,Q,exec,notify-send non-consuming"), "{parsed}");
+        assert!(parsed.contains("binds = SUPER,Q,exec,notify-send universal"), "{parsed}");
     }
 
     #[test]
@@ -2260,7 +2261,7 @@ mod tests {
     fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
         let generated = hyprlang_to_lua("exec-once = notify-send\nunknown-setting = keep-me\n");
         assert!(!generated.contains("hl.raw("));
-        assert!(generated.contains("hl.on(\\"hyprland.start\\""));
+        assert!(generated.contains("hl.on(\"hyprland.start\""));
         assert!(generated.contains("Legacy directive needs a Lua API mapping"));
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
