@@ -1869,15 +1869,28 @@ fn emit_config_section(
     path: &[String],
     lines: &mut Vec<String>,
 ) -> LuaResult<()> {
-    let Some(category) = path.first() else {
+    if path.is_empty() {
         return Err(mlua::Error::RuntimeError(
             "hl.config: empty configuration category".to_string(),
         ));
-    };
+    }
     let mut body = Vec::new();
-    emit_section_body(entries, 1, &mut body)?;
+    emit_section_body(entries, path.len(), &mut body)?;
     if !body.is_empty() {
-        lines.push(format!("{} {{\n{}\n}}\n", category, body.join("\n")));
+        let mut section = String::new();
+        for (depth, category) in path.iter().enumerate() {
+            section.push_str(&"    ".repeat(depth));
+            section.push_str(category);
+            section.push_str(" {\n");
+        }
+        section.push_str(&body.join("\n"));
+        section.push('\n');
+        for depth in (0..path.len()).rev() {
+            section.push_str(&"    ".repeat(depth));
+            section.push('}');
+            section.push('\n');
+        }
+        lines.push(section);
     }
     Ok(())
 }
@@ -3011,6 +3024,19 @@ mod tests {
         assert!(parsed.contains("gaps_in = 28"), "{parsed}");
         assert!(parsed.contains("gaps_out = 7"), "{parsed}");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preserves_dotted_nested_config_table_paths() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.config({ ["general.col"] = { rounding = 8 } })"#),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("general {"), "{parsed}");
+        assert!(parsed.contains("col {"), "{parsed}");
+        assert!(parsed.contains("rounding = 8"), "{parsed}");
     }
 
     #[test]
