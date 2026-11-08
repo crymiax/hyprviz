@@ -1208,7 +1208,6 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "window.center" => "centerwindow",
         "window.cycle_next" => "cyclenext",
         "window.tag" => "tagwindow",
-        "window.clear_tags" => "tagwindow",
         "focuswindow" => "focuswindow",
         "window.toggle_swallow" => "toggleswallow",
         "window.pin" => "pin",
@@ -1222,7 +1221,6 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "workspace.rename" => "renameworkspace",
         "workspace.move" => "movecurrentworkspacetomonitor",
         "workspace.swap_monitors" => "swapactiveworkspaces",
-        "workspace.change_id" => "changegroupactive",
         "focus" => "movefocus",
         "no_op" => "nothing",
         "group.toggle" => "togglegroup",
@@ -1251,6 +1249,12 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
                     "monitor",
                     "monitor1",
                     "monitor2",
+                    "on_current_monitor",
+                    "urgent_or_last",
+                    "last",
+                    "id",
+                    "relative",
+                    "layout_aware",
                     "signal",
                     "x",
                     "y",
@@ -1959,50 +1963,78 @@ fn serialize_bind_directive(key: &str, value: &str) -> Option<String> {
         format!("{} + {key_name}", modifiers.join(" + "))
     };
     let dispatcher = parts[2].as_str();
-    let args = parts.get(3..).unwrap_or_default().join(",");
-    let argument = unquote_hyprlang(&args);
+    let arg = |index: usize| parts.get(index).map(|part| unquote_hyprlang(part));
+    let arg1 = arg(3).unwrap_or_default();
+    let arg2 = arg(4).unwrap_or_default();
+
     let call = match dispatcher {
-        "exec" => format!("hl.dsp.exec_cmd({})", lua_quote(&argument)),
-        "execr" => format!("hl.dsp.exec_raw({})", lua_quote(&argument)),
-        "exit" => "hl.dsp.exit()".to_string(),
-        "submap" => format!("hl.dsp.submap({})", lua_quote(&argument)),
-        "pass" => format!("hl.dsp.pass({})", lua_quote(&argument)),
-        "sendshortcut" => format!("hl.dsp.send_shortcut({})", lua_quote(&argument)),
-        "sendkeystate" => format!("hl.dsp.send_key_state({})", lua_quote(&argument)),
-        "layoutmsg" => format!("hl.dsp.layout({})", lua_quote(&argument)),
-        "dpms" => format!("hl.dsp.dpms({})", lua_quote(&argument)),
-        "event" => format!("hl.dsp.event({})", lua_quote(&argument)),
-        "global" => format!("hl.dsp.global({})", lua_quote(&argument)),
-        "forcerendererreload" => "hl.dsp.force_renderer_reload()".to_string(),
-        "forceidle" => format!("hl.dsp.force_idle({})", lua_quote(&argument)),
-        "killactive" => "hl.dsp.window.close()".to_string(),
-        "forcekillactive" => "hl.dsp.window.kill()".to_string(),
-        "togglefloating" => "hl.dsp.window.float({ action = \"toggle\" })".to_string(),
-        "fullscreen" => "hl.dsp.window.fullscreen({ action = \"toggle\" })".to_string(),
-        "pseudo" => "hl.dsp.window.pseudo()".to_string(),
-        "movewindow" => format!("hl.dsp.window.move({{ workspace = {} }})", lua_quote(&argument)),
-        "swapwindow" => format!("hl.dsp.window.swap({{ direction = {} }})", lua_quote(&argument)),
-        "centerwindow" => "hl.dsp.window.center()".to_string(),
-        "cyclenext" => "hl.dsp.window.cycle_next()".to_string(),
-        "tagwindow" => format!("hl.dsp.window.tag({})", lua_quote(&argument)),
-        "toggleswallow" => "hl.dsp.window.toggle_swallow()".to_string(),
-        "pin" => "hl.dsp.window.pin()".to_string(),
-        "bringactivetotop" => "hl.dsp.window.bring_to_top()".to_string(),
-        "alterzorder" => format!("hl.dsp.window.alter_zorder({})", lua_quote(&argument)),
-        "setprop" => format!("hl.dsp.window.set_prop({})", lua_quote(&argument)),
-        "denywindowfromgroup" => "hl.dsp.window.deny_from_group()".to_string(),
-        "dragwindow" => "hl.dsp.window.drag()".to_string(),
-        "resizeactive" => "hl.dsp.window.resize()".to_string(),
-        "workspace" => format!("hl.dsp.focus({{ workspace = {} }})", lua_quote(&argument)),
-        "movetoworkspace" | "movetoworkspacesilent" => format!("hl.dsp.window.move({{ workspace = {} }})", lua_quote(&argument)),
-        "togglespecialworkspace" => format!("hl.dsp.workspace.toggle_special({})", lua_quote(&argument)),
-        "renameworkspace" => format!("hl.dsp.workspace.rename({{ workspace = {} }})", lua_quote(&argument)),
-        "movecurrentworkspacetomonitor" => format!("hl.dsp.workspace.move({{ monitor = {} }})", lua_quote(&argument)),
-        "swapactiveworkspaces" => format!("hl.dsp.workspace.swap_monitors({{ monitor1 = {} }})", lua_quote(&argument)),
-        "movefocus" => format!("hl.dsp.focus({{ direction = {} }})", lua_quote(&argument)),
-        "focuswindow" => format!("hl.dsp.focus({{ window = {} }})", lua_quote(&argument)),
-        "focusmonitor" => format!("hl.dsp.focus({{ monitor = {} }})", lua_quote(&argument)),
-        "nothing" => "hl.dsp.no_op()".to_string(),
+        "exec" => format!("hl.dsp.exec_cmd({})", lua_quote(&arg1)),
+        "execr" => format!("hl.dsp.exec_raw({})", lua_quote(&arg1)),
+        "exit" if arg1.is_empty() => "hl.dsp.exit()".to_string(),
+        "submap" => format!("hl.dsp.submap({})", lua_quote(&arg1)),
+        "pass" => format!("hl.dsp.pass({})", lua_quote(&arg1)),
+        "sendshortcut" => format!("hl.dsp.send_shortcut({})", lua_quote(&arg1)),
+        "sendkeystate" => format!("hl.dsp.send_key_state({})", lua_quote(&arg1)),
+        "layoutmsg" => format!("hl.dsp.layout({})", lua_quote(&arg1)),
+        "dpms" => format!("hl.dsp.dpms({})", lua_quote(&arg1)),
+        "event" => format!("hl.dsp.event({})", lua_quote(&arg1)),
+        "global" => format!("hl.dsp.global({})", lua_quote(&arg1)),
+        "forcerendererreload" if arg1.is_empty() => "hl.dsp.force_renderer_reload()".to_string(),
+        "forceidle" => format!("hl.dsp.force_idle({})", lua_quote(&arg1)),
+        "killactive" if arg1.is_empty() => "hl.dsp.window.close()".to_string(),
+        "forcekillactive" if arg1.is_empty() => "hl.dsp.window.kill()".to_string(),
+        "togglefloating" if arg1.is_empty() => "hl.dsp.window.float({ action = \"toggle\" })".to_string(),
+        "fullscreen" if arg1.is_empty() => "hl.dsp.window.fullscreen({ action = \"toggle\" })".to_string(),
+        "pseudo" if arg1.is_empty() => "hl.dsp.window.pseudo()".to_string(),
+        "movewindow" if matches!(arg1.as_str(), "l" | "r" | "u" | "d" | "left" | "right" | "up" | "down") =>
+            format!("hl.dsp.window.move({{ direction = {} }})", lua_quote(&arg1)),
+        "swapwindow" if matches!(arg1.as_str(), "l" | "r" | "u" | "d" | "left" | "right" | "up" | "down") =>
+            format!("hl.dsp.window.swap({{ direction = {} }})", lua_quote(&arg1)),
+        "centerwindow" if arg1.is_empty() => "hl.dsp.window.center()".to_string(),
+        "cyclenext" if arg1.is_empty() => "hl.dsp.window.cycle_next()".to_string(),
+        "tagwindow" if !arg1.is_empty() =>
+            format!("hl.dsp.window.tag({{ tag = {} }})", lua_quote(&arg1)),
+        "toggleswallow" if arg1.is_empty() => "hl.dsp.window.toggle_swallow()".to_string(),
+        "pin" if arg1.is_empty() => "hl.dsp.window.pin()".to_string(),
+        "bringactivetotop" if arg1.is_empty() => "hl.dsp.window.bring_to_top()".to_string(),
+        "alterzorder" if !arg1.is_empty() =>
+            format!("hl.dsp.window.alter_zorder({{ mode = {} }})", lua_quote(&arg1)),
+        "setprop" if !arg1.is_empty() && !arg2.is_empty() =>
+            format!(
+                "hl.dsp.window.set_prop({{ prop = {}, value = {} }})",
+                lua_quote(&arg1),
+                lua_quote(&arg2)
+            ),
+        "denywindowfromgroup" if arg1.is_empty() => "hl.dsp.window.deny_from_group()".to_string(),
+        "dragwindow" if arg1.is_empty() => "hl.dsp.window.drag()".to_string(),
+        "resizeactive" if arg1.is_empty() => "hl.dsp.window.resize()".to_string(),
+        "workspace" if !arg1.is_empty() =>
+            format!("hl.dsp.focus({{ workspace = {} }})", lua_quote(&arg1)),
+        "movetoworkspace" | "movetoworkspacesilent" if !arg1.is_empty() =>
+            format!("hl.dsp.window.move({{ workspace = {}, follow = {} }})", lua_quote(&arg1), if dispatcher == "movetoworkspace" { "true" } else { "false" }),
+        "togglespecialworkspace" if arg1.is_empty() == false =>
+            format!("hl.dsp.workspace.toggle_special({})", lua_quote(&arg1)),
+        "renameworkspace" if !arg1.is_empty() && !arg2.is_empty() =>
+            format!(
+                "hl.dsp.workspace.rename({{ workspace = {}, name = {} }})",
+                lua_quote(&arg1),
+                lua_quote(&arg2)
+            ),
+        "renameworkspace" if !arg1.is_empty() =>
+            format!("hl.dsp.workspace.rename({{ workspace = {} }})", lua_quote(&arg1)),
+        "movecurrentworkspacetomonitor" if !arg1.is_empty() =>
+            format!("hl.dsp.workspace.move({{ monitor = {} }})", lua_quote(&arg1)),
+        "swapactiveworkspaces" if !arg1.is_empty() && !arg2.is_empty() =>
+            format!(
+                "hl.dsp.workspace.swap_monitors({{ monitor1 = {}, monitor2 = {} }})",
+                lua_quote(&arg1),
+                lua_quote(&arg2)
+            ),
+        "movefocus" if !arg1.is_empty() =>
+            format!("hl.dsp.focus({{ direction = {} }})", lua_quote(&arg1)),
+        "focusmonitor" if !arg1.is_empty() =>
+            format!("hl.dsp.focus({{ monitor = {} }})", lua_quote(&arg1)),
+        "nothing" if arg1.is_empty() => "hl.dsp.no_op()".to_string(),
         _ => return None,
     };
 
@@ -2513,6 +2545,29 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("windowrulev2 ="), "{parsed}");
         assert!(parsed.contains("layerrule ="), "{parsed}");
+    }
+
+    #[test]
+    fn serializes_legacy_window_and_workspace_dispatchers_with_native_table_arguments() {
+        let source = concat!(
+            "bind = SUPER, left, movewindow, l\n",
+            "bind = SUPER, T, tagwindow, +scratch\n",
+            "bind = SUPER, R, alterzorder, top\n",
+            "bind = SUPER, P, setprop, rounding, 8\n",
+            "bind = SUPER, N, renameworkspace, 2, work\n",
+            "bind = SUPER, M, swapactiveworkspaces, HDMI-A-1, eDP-1\n",
+        );
+        let generated = hyprlang_to_lua(source).unwrap();
+        assert!(generated.contains("hl.dsp.window.move({ direction = \"l\" })"), "{generated}");
+        assert!(generated.contains("hl.dsp.window.tag({ tag = \"+scratch\" })"), "{generated}");
+        assert!(generated.contains("hl.dsp.window.alter_zorder({ mode = \"top\" })"), "{generated}");
+        assert!(generated.contains("hl.dsp.window.set_prop({ prop = \"rounding\", value = \"8\" })"), "{generated}");
+        assert!(generated.contains("hl.dsp.workspace.rename({ workspace = \"2\", name = \"work\" })"), "{generated}");
+        assert!(generated.contains("hl.dsp.workspace.swap_monitors({ monitor1 = \"HDMI-A-1\", monitor2 = \"eDP-1\" })"), "{generated}");
+
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("bind = SUPER,left,movewindow,l"), "{parsed}");
     }
 
     #[test]
