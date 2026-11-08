@@ -2873,7 +2873,72 @@ pub fn hyprlang_to_lua(source: &str) -> Result<String, String> {
         output.push_str(&format!("hl.device({{ {} }})\n", fields.join(", ")));
     }
 
+    let mut submap_stack = Vec::<String>::new();
     for (key, value) in directives {
+        if key == "submap" {
+            let fields = split_hyprlang_fields(&value);
+            let name = unquote_hyprlang(fields.first().ok_or_else(|| {
+                "cannot save Lua configuration: empty submap directive".to_string()
+            })?);
+            if name.is_empty() || name.chars().any(|ch| matches!(ch, ',' | '\n' | '\r')) {
+                return Err("cannot save Lua configuration: invalid submap name".to_string());
+            }
+            if fields.len() > 2 {
+                return Err(format!(
+                    "cannot save Lua configuration: unsupported submap directive '{}'",
+                    value
+                ));
+            }
+
+            if name == "reset" {
+                if fields.len() != 1 {
+                    return Err(
+                        "cannot save Lua configuration: reset cannot have a reset target"
+                            .to_string(),
+                    );
+                }
+                while submap_stack.pop().is_some() {
+                    output.push_str("end)\n");
+                }
+                continue;
+            }
+
+            if let Some(position) = submap_stack.iter().position(|active| active == &name) {
+                if fields.len() == 2 {
+                    return Err(format!(
+                        "cannot save Lua configuration: submap '{}' changes its reset target while active",
+                        name
+                    ));
+                }
+                while submap_stack.len() > position + 1 {
+                    submap_stack.pop();
+                    output.push_str("end)\n");
+                }
+                continue;
+            }
+
+            if fields.len() == 2 {
+                let reset = unquote_hyprlang(&fields[1]);
+                if reset.is_empty() || reset.chars().any(|ch| matches!(ch, ',' | '\n' | '\r')) {
+                    return Err(
+                        "cannot save Lua configuration: invalid submap reset target".to_string(),
+                    );
+                }
+                output.push_str(&format!(
+                    "hl.define_submap({}, {}, function()\n",
+                    lua_quote(&name),
+                    lua_quote(&reset)
+                ));
+            } else {
+                output.push_str(&format!(
+                    "hl.define_submap({}, function()\n",
+                    lua_quote(&name)
+                ));
+            }
+            submap_stack.push(name);
+            continue;
+        }
+
         let line = serialize_directive(&key, &value).ok_or_else(|| {
             format!(
                 "cannot save Lua configuration: no safe native Lua mapping for '{} = {}'",
@@ -2881,6 +2946,9 @@ pub fn hyprlang_to_lua(source: &str) -> Result<String, String> {
             )
         })?;
         output.push_str(&line);
+    }
+    while submap_stack.pop().is_some() {
+        output.push_str("end)\n");
     }
     output.push_str("-- END HYPRVIZ MANAGED CONFIG\n");
     Ok(output)
@@ -2924,6 +2992,39 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn serializes_legacy_submaps_as_nested_native_lua_callbacks() {
+        let source = concat!(
+            "submap = resize\n",
+            "bind = , left, exec, notify-send left\n",
+            "submap = fine, resize\n",
+            "bind = , j, exec, notify-send fine\n",
+            "submap = resize\n",
+            "bind = , escape, submap, reset\n",
+            "submap = reset\n",
+        );
+        let generated = hyprlang_to_lua(source).unwrap();
+        assert!(
+            generated.contains(r#"hl.define_submap("resize", function()"#),
+            "{generated}"
+        );
+        assert!(
+            generated.contains(r#"hl.define_submap("fine", "resize", function()"#),
+            "{generated}"
+        );
+        assert_eq!(generated.matches("hl.define_submap(").count(), 2, "{generated}");
+
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(&generated),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("bind = ,left,exec,notify-send left"), "{parsed}");
+        assert!(parsed.contains("submap = fine,resize"), "{parsed}");
+        assert!(parsed.contains("bind = ,j,exec,notify-send fine"), "{parsed}");
     }
 
     #[test]
