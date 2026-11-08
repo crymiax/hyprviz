@@ -1985,6 +1985,17 @@ fn serialize_bind_directive(key: &str, value: &str) -> Option<String> {
         "forcekillactive" if arg1.is_empty() => "hl.dsp.window.kill()".to_string(),
         "togglefloating" if arg1.is_empty() => "hl.dsp.window.float({ action = \"toggle\" })".to_string(),
         "fullscreen" if arg1.is_empty() => "hl.dsp.window.fullscreen({ action = \"toggle\" })".to_string(),
+        "fullscreenstate" if !arg1.is_empty() && !arg2.is_empty() => {
+            let action = parts.get(5).map(|value| {
+                format!(", action = {}", lua_quote(&unquote_hyprlang(value)))
+            }).unwrap_or_default();
+            format!(
+                "hl.dsp.window.fullscreen_state({{ internal = {}, client = {}{} }})",
+                lua_literal(&arg1),
+                lua_literal(&arg2),
+                action
+            )
+        },
         "pseudo" if arg1.is_empty() => "hl.dsp.window.pseudo()".to_string(),
         "movewindow" if matches!(arg1.as_str(), "l" | "r" | "u" | "d" | "left" | "right" | "up" | "down") =>
             format!("hl.dsp.window.move({{ direction = {} }})", lua_quote(&arg1)),
@@ -2024,6 +2035,12 @@ fn serialize_bind_directive(key: &str, value: &str) -> Option<String> {
             format!("hl.dsp.workspace.rename({{ workspace = {} }})", lua_quote(&arg1)),
         "movecurrentworkspacetomonitor" if !arg1.is_empty() =>
             format!("hl.dsp.workspace.move({{ monitor = {} }})", lua_quote(&arg1)),
+        "moveworkspacetomonitor" if !arg1.is_empty() && !arg2.is_empty() =>
+            format!(
+                "hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})",
+                lua_quote(&arg1),
+                lua_quote(&arg2)
+            ),
         "swapactiveworkspaces" if !arg1.is_empty() && !arg2.is_empty() =>
             format!(
                 "hl.dsp.workspace.swap_monitors({{ monitor1 = {}, monitor2 = {} }})",
@@ -2545,6 +2562,23 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("windowrulev2 ="), "{parsed}");
         assert!(parsed.contains("layerrule ="), "{parsed}");
+    }
+
+    #[test]
+    fn serializes_fullscreen_state_and_workspace_to_monitor_dispatchers() {
+        let source = concat!(
+            "bind = SUPER, F, fullscreenstate, 1, 2, toggle\\n",
+            "bind = SUPER, W, moveworkspacetomonitor, 3, HDMI-A-1\\n",
+        );
+        let generated = hyprlang_to_lua(source).unwrap();
+        assert!(
+            generated.contains("hl.dsp.window.fullscreen_state({ internal = 1, client = 2, action = \\"toggle\\" })"),
+            "{generated}"
+        );
+        assert!(
+            generated.contains("hl.dsp.workspace.move({ workspace = \\"3\\", monitor = \\"HDMI-A-1\\" })"),
+            "{generated}"
+        );
     }
 
     #[test]
