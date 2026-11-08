@@ -541,6 +541,11 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
             let mut args = args.into_iter();
             let name = args.next().as_ref().and_then(lua_value_as_string);
             let value = args.next().as_ref().and_then(lua_value_as_string);
+            let dbus = args.next().as_ref().and_then(|value| match value {
+                Value::Boolean(value) => Some(*value),
+                Value::Integer(value) => Some(*value != 0),
+                _ => None,
+            }).unwrap_or(false);
             if let (Some(name), Some(value)) = (name, value) {
                 let value = if value.contains(',') || value.contains('#') {
                     format!(
@@ -550,7 +555,8 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
                 } else {
                     value
                 };
-                append_output(&env_output, format!("env = {name},{value}"));
+                let dbus = if dbus { ",true" } else { "" };
+                append_output(&env_output, format!("env = {name},{value}{dbus}"));
             }
             Ok(())
         })?,
@@ -816,7 +822,17 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
 
     hl.set("dsp", create_dispatcher_namespace(lua, "hl.dsp".to_string())?)?;
     hl.set("notification", create_noop_namespace(lua)?)?;
-    hl.set("plugin", create_noop_namespace(lua)?)?;
+
+    let plugin_output = Rc::clone(&output);
+    let plugin_namespace = lua.create_table()?;
+    plugin_namespace.set(
+        "load",
+        lua.create_function(move |_, path: String| {
+            append_output(&plugin_output, format!("plugin = {path}"));
+            Ok(())
+        })?,
+    )?;
+    hl.set("plugin", plugin_namespace)?;
     hl.set("layout", create_noop_namespace(lua)?)?;
 
     let meta = lua.create_table()?;
@@ -2420,6 +2436,20 @@ mod tests {
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("windowrulev2 ="), "{parsed}");
         assert!(parsed.contains("layerrule ="), "{parsed}");
+    }
+
+    #[test]
+    fn serializes_plugin_and_dbus_environment_directives() {
+        let generated = hyprlang_to_lua(
+            "plugin = /home/user/plugin.so\\nenv = GTK_THEME,Adwaita,true\\n",
+        )
+        .unwrap();
+        assert!(generated.contains("hl.plugin.load("));
+        assert!(generated.contains("hl.env("));
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("plugin = /home/user/plugin.so"), "{parsed}");
+        assert!(parsed.contains("env = GTK_THEME,Adwaita,true"), "{parsed}");
     }
 
     #[test]
