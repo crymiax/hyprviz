@@ -1133,11 +1133,16 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
         "min_luminance",
         "max_luminance",
         "max_avg_luminance",
-        "reserved",
     ] {
         if let Some(value) = table_string(value, key) {
             fields.push(value);
         }
+    }
+    if let Some(reserved) = table_field(value, "reserved")
+        .or_else(|| table_field(value, "reserved_area"))
+        .and_then(value_to_hyprlang)
+    {
+        fields.push(reserved);
     }
     if table_bool(value, "disabled") == Some(true) {
         fields.push("disabled".to_string());
@@ -1496,8 +1501,17 @@ fn animation_to_hyprlang(value: &LuaValue) -> Option<String> {
         return None;
     }
     let leaf = table_string(value, "leaf")?;
-    let enabled = table_string(value, "enabled").unwrap_or_else(|| "1".to_string());
-    let speed = table_string(value, "speed").unwrap_or_else(|| "7".to_string());
+    let enabled = match table_field(value, "enabled") {
+        None | Some(LuaValue::Scalar(LuaScalar::Boolean(true))) => "1",
+        Some(LuaValue::Scalar(LuaScalar::Boolean(false))) => "0",
+        _ => return None,
+    };
+    let speed = match table_field(value, "speed") {
+        None => "7".to_string(),
+        Some(LuaValue::Scalar(LuaScalar::Integer(value))) => value.to_string(),
+        Some(LuaValue::Scalar(LuaScalar::Number(value))) => value.to_string(),
+        _ => return None,
+    };
     let curve = table_string(value, "bezier")
         .or_else(|| table_string(value, "spring").map(|name| format!("spring:{name}")))
         .unwrap_or_else(|| "default".to_string());
@@ -2738,6 +2752,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("cannot be represented"), "{error}");
+    }
+
+    #[test]
+    fn rejects_non_boolean_animation_enabled_values_and_preserves_disabled_state() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.animation({ leaf = "windows", enabled = false, speed = 4 })"#),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("animation = windows,0,4"), "{parsed}");
+
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.animation({ leaf = "windows", enabled = "false" })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("hl.animation"), "{error}");
     }
 
     #[test]
