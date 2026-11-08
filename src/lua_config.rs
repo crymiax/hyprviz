@@ -1310,6 +1310,38 @@ fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Opt
         return None;
     }
 
+    const BOOLEAN_OPTIONS: &[&str] = &[
+        "locked",
+        "repeating",
+        "release",
+        "non_consuming",
+        "auto_consuming",
+        "transparent",
+        "ignore_mods",
+        "dont_inhibit",
+        "long_press",
+        "submap_universal",
+        "mouse",
+        "click",
+        "drag",
+        "allow_input_capture",
+    ];
+    if BOOLEAN_OPTIONS.iter().any(|name| {
+        table_field(&options, name).is_some() && table_bool(&options, name).is_none()
+    }) {
+        return None;
+    }
+    for name in ["description", "desc"] {
+        if table_field(&options, name).is_some()
+            && !matches!(
+                table_field(&options, name),
+                Some(LuaValue::Scalar(LuaScalar::String(_)))
+            )
+        {
+            return None;
+        }
+    }
+
     let enabled = |name: &str| table_bool(&options, name) == Some(true);
     let description = match (
         table_string(&options, "description"),
@@ -2943,8 +2975,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            parsed.contains("bindtapdx = SUPER,Q,Open terminal,exec,kitty")
-                || parsed.contains("bindtapxd = SUPER,Q,Open terminal,exec,kitty"),
+            parsed.contains("bindatipd = SUPER,Q,Open terminal,exec,kitty"),
             "{parsed}"
         );
         assert!(parsed.contains("bindo = SUPER,W,exec,kitty"), "{parsed}");
@@ -2959,6 +2990,8 @@ mod tests {
             r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { repeating = true, long_press = true })"#,
             r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { click = true, drag = true })"#,
             r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { description = "bad, description" })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { locked = "true" })"#,
+            r#"hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"), { description = true })"#,
         ] {
             let error = expand_lua_config(
                 Path::new("/tmp/hyprland.lua"),
