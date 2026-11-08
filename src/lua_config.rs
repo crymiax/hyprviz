@@ -1984,50 +1984,136 @@ fn serialize_workspace_directive(value: &str) -> Option<String> {
     Some(format!("hl.workspace_rule({{ {} }})\n", table.join(", ")))
 }
 
+fn window_effect_key(token: &str) -> Option<(&'static str, bool)> {
+    Some(match token {
+        "float" | "tile" | "fullscreen" | "maximize" | "center" | "pseudo"
+        | "no_initial_focus" | "pin" | "persistent_size" | "allows_input"
+        | "dim_around" | "decorate" | "focus_on_activate" | "keep_aspect_ratio"
+        | "nearest_neighbor" | "no_anim" | "no_blur" | "no_dim" | "no_focus"
+        | "no_follow_mouse" | "no_max_size" | "no_shadow" | "no_glow" | "no_wobble"
+        | "no_shortcuts_inhibit" | "opaque" | "force_rgbx" | "sync_fullscreen"
+        | "immediate" | "xray" | "render_unfocused" | "no_screen_share"
+        | "no_vrr" | "no_auto_hdr" | "stay_focused" | "confine_pointer"
+        | "no_xdg_drags" => (token, true),
+        "noblur" | "noBlur" => ("no_blur", true),
+        "noshadow" => ("no_shadow", true),
+        "nofocus" => ("no_focus", true),
+        "noanim" => ("no_anim", true),
+        "nodim" => ("no_dim", true),
+        "noinitialfocus" => ("no_initial_focus", true),
+        "nomaxsize" => ("no_max_size", true),
+        "noborder" => ("border_size", false),
+        "bordercolor" => ("border_color", false),
+        "fullscreenstate" => ("fullscreen_state", false),
+        "idleinhibit" => ("idle_inhibit", false),
+        "fullscreen_state" | "move" | "size" | "monitor" | "workspace" | "group"
+        | "suppress_event" | "content" | "no_close_for" | "scrolling_width"
+        | "rounding" | "border_size" | "rounding_power" | "scroll_mouse"
+        | "scroll_touchpad" | "animation" | "idle_inhibit" | "opacity" | "tag"
+        | "max_size" | "min_size" | "border_color" | "tonemap" => (token, false),
+        _ => return None,
+    })
+}
+
 fn serialize_windowrule_directive(value: &str) -> Option<String> {
     let fields = split_hyprlang_fields(value);
-    let effects = fields.first()?.split_whitespace().collect::<Vec<_>>();
-    let match_fields = fields.iter().skip(1).filter_map(|field| {
+    let effect_source = fields.first()?;
+    let tokens = effect_source.split_whitespace().collect::<Vec<_>>();
+    let mut table = Vec::new();
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let token = tokens[index].trim_matches('"');
+        let (key, is_boolean) = window_effect_key(token)?;
+        if is_boolean {
+            table.push(format!("{key} = true"));
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        let value_start = index;
+        while index < tokens.len() && window_effect_key(tokens[index].trim_matches('"')).is_none() {
+            index += 1;
+        }
+        let argument = if key == "border_size" && token == "noborder" {
+            "0".to_string()
+        } else {
+            tokens[value_start..index].join(" ")
+        };
+        if argument.is_empty() {
+            return None;
+        }
+        table.push(format!("{key} = {}", lua_literal(&unquote_hyprlang(&argument))));
+    }
+
+    let match_fields = fields.iter().skip(1).map(|field| {
         let (key, value) = field.split_once(':')?;
-        Some(format!("{} = {}", lua_key(key.trim()), lua_quote(&unquote_hyprlang(value))))
-    }).collect::<Vec<_>>();
+        let key = key.trim();
+        if key.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} = {}",
+            lua_key(key),
+            lua_literal(&unquote_hyprlang(value))
+        ))
+    }).collect::<Option<Vec<_>>>()?;
     if match_fields.is_empty() {
         return None;
     }
 
-    let mut table = vec![format!("match = {{ {} }}", match_fields.join(", "))];
-    for effect in effects {
-        match effect {
-            "float" | "tile" | "fullscreen" | "pin" | "center" | "no_focus"
-            | "no_blur" | "no_shadow" | "no_anim" | "no_initial_focus" | "no_close"
-            | "immediate" | "opaque" | "force_rgbx" | "sync_fullscreen"
-            | "no_vrr" | "stay_focused" => table.push(format!("{effect} = true")),
-            "noblur" => table.push("no_blur = true".to_string()),
-            "noborder" => table.push("border_size = 0".to_string()),
-            "nomaxsize" => table.push("no_max_size = true".to_string()),
-            _ => return None,
-        }
-    }
+    table.insert(0, format!("match = {{ {} }}", match_fields.join(", ")));
     Some(format!("hl.window_rule({{ {} }})\n", table.join(", ")))
 }
 
 fn serialize_layer_rule_directive(value: &str) -> Option<String> {
     let fields = split_hyprlang_fields(value);
-    let effects = fields.first()?.split_whitespace().collect::<Vec<_>>();
-    let namespace = fields.get(1).map(|value| unquote_hyprlang(value))?;
+    let namespace = unquote_hyprlang(fields.get(1)?);
     if namespace.is_empty() {
         return None;
     }
+
+    let tokens = fields.first()?.split_whitespace().collect::<Vec<_>>();
     let mut table = vec![format!("match = {{ namespace = {} }}", lua_quote(&namespace))];
-    for effect in effects {
-        match effect {
-            "blur" | "blur_popups" | "ignore_alpha" | "dim_around" | "xray"
-            | "no_anim" | "no_screen_share" => {
-                table.push(format!("{effect} = true"));
-            }
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index].trim_matches('"');
+        let (key, needs_value) = match token {
+            "blur" | "blur_popups" | "dim_around" | "xray" | "no_anim" | "no_screen_share" => (token, false),
+            "noanim" => ("no_anim", false),
+            "blurpopups" => ("blur_popups", false),
+            "dimaround" => ("dim_around", false),
+            "ignorealpha" => ("ignore_alpha", true),
+            "ignore_alpha" | "animation" | "order" | "above_lock" => (token, true),
             _ => return None,
+        };
+        if !needs_value {
+            table.push(format!("{key} = true"));
+            index += 1;
+            continue;
         }
+        index += 1;
+        let value_start = index;
+        while index < tokens.len() {
+            let next = tokens[index].trim_matches('"');
+            if matches!(
+                next,
+                "blur" | "blur_popups" | "dim_around" | "xray" | "no_anim"
+                    | "no_screen_share" | "noanim" | "blurpopups" | "dimaround"
+                    | "ignorealpha" | "ignore_alpha" | "animation" | "order" | "above_lock"
+            ) {
+                break;
+            }
+            index += 1;
+        }
+        if value_start == index {
+            return None;
+        }
+        let argument = tokens[value_start..index].join(" ");
+        table.push(format!("{key} = {}", lua_literal(&unquote_hyprlang(&argument))));
     }
+
     Some(format!("hl.layer_rule({{ {} }})\n", table.join(", ")))
 }
 
@@ -2315,6 +2401,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("unknown-setting"), "{error}");
+    }
+
+    #[test]
+    fn serializes_window_and_layer_rules_with_native_lua_specs() {
+        let source = concat!(
+            "windowrulev2 = float noblur move 10 20, class:^(kitty)$\n",
+            "layerrule = blur blurpopups ignorealpha 0.25, namespace:^(panel)$\n",
+        );
+        let generated = hyprlang_to_lua(source).unwrap();
+        assert!(generated.contains("hl.window_rule("));
+        assert!(generated.contains("hl.layer_rule("));
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("windowrulev2 ="), "{parsed}");
+        assert!(parsed.contains("layerrule ="), "{parsed}");
     }
 
     #[test]
