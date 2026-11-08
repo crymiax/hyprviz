@@ -15,11 +15,47 @@
 **Fork** of [HyprGUI](https://github.com/MarkusVolk/hyprgui) — an unofficial GUI for configuring Hyprland, built with GTK4 and Rust. 🚀🦀<br>
 Comes with a custom [hyprparser](https://crates.io/crates/hyprparser) for Hyprland's configuration file. (Rust btw) 🦀
 
-> **Note:** Hyprland 0.55 is not supported yet.
+> **Lua configuration:** HyprViz embeds Lua 5.4 and executes configuration code (locals, functions, conditionals, loops, computed tables, `require()`, `dofile()`, and `loadfile()`) instead of statically parsing Lua source. It collects supported declarative `hl.*` calls for the GUI while keeping the main Lua file and user-authored code intact. The editor does not emulate live compositor state or run compositor dispatchers, plugins, timers, or event callbacks. For safe evaluation, general file IO is disabled, only read-only `os` helpers are exposed, and each evaluation is limited to 25 million VM instructions and 128 MiB of Lua memory. GUI-managed settings are stored separately in `hyprviz.lua`.
 
 ![Preview](.github/preview.png)
 
 </div>
+
+## Lua configuration
+
+When `hyprland.lua` is present, HyprViz evaluates it with an embedded Lua 5.4 VM. Normal Lua control flow, local functions, computed tables, and local modules are evaluated as code rather than parsed from source text.
+
+A minimal example:
+
+```lua
+local gaps = 6
+local terminal = "alacritty"
+
+hl.config({
+    general = {
+        gaps_in = gaps,
+        gaps_out = 12,
+    },
+    decoration = {
+        rounding = 8,
+    },
+})
+
+hl.bind("SUPER + RETURN", hl.dsp.exec_cmd(terminal))
+hl.on("hyprland.start", function()
+    hl.exec_cmd("swww-daemon")
+end)
+
+-- HyprViz's GUI-managed settings are loaded separately.
+require("./hyprviz")
+
+```
+
+HyprViz stores GUI-managed values in `hyprviz.lua` and additional profiles in `hyprviz/<profile>.lua`. The main `hyprland.lua` file and Lua code outside the managed block are kept intact when the GUI saves changes. Use `require()` for modules; `dofile()` and `loadfile()` resolve relative paths from the file currently being evaluated. GUI saves convert supported legacy directives to native Hyprland Lua calls such as `hl.config()`, `hl.monitor()`, `hl.bind()`, `hl.animation()`, plugin, and rule APIs. A save is refused when a legacy directive or device field has no safe native mapping, so unsupported settings are not silently discarded.
+
+The editor is a configuration evaluator, not a running compositor. Live window, workspace and monitor queries return empty or `nil` values. Dispatcher calls, plugins, timers and ordinary event callbacks are not run. The `hyprland.start` callback is evaluated only to collect startup `hl.exec_cmd()` entries; these become `exec-once` directives and are never launched by the editor.
+
+For safer evaluation, general-purpose `io` access is disabled, native C-module loading is disabled, and `require()`, `dofile()` and `loadfile()` can read Lua modules only inside the Hyprland configuration directory. The exposed `os` table contains read-only time helpers and a limited `getenv()` allowlist. Each evaluation is capped at 128 MiB of Lua memory and 25 million VM instructions. Lua 5.4 is built from vendored sources, so a system Lua installation is not required.
 
 ## Installation
 
@@ -132,7 +168,7 @@ If you manage your NixOS configuration with flakes, add hyprviz as an input in y
 - [x] Add confirmation dialog for editing main hyprland.conf
 - [x] Add row actions (discard/remove) for individual options
 - [x] Optimize startup performance
-- [ ] Add support for lua config
+- [x] Add support for Lua 5.4 configuration
 - [ ] Add support for waybar, swaync, hyprlock...
 - [x] Improve GUI
 - [ ] Replace hyprparser with [hyprlang-rs](https://github.com/spinualexandru/hyprlang-rs)

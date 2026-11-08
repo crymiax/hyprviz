@@ -80,15 +80,19 @@ pub fn is_development_mode() -> bool {
 pub fn get_config_path(write: bool, profile: &str) -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let base_path = Path::new(&home);
+    let lua_config = base_path.join(LUA_CONFIG_PATH).is_file();
 
     if write {
+        let extension = if lua_config { "lua" } else { "conf" };
         if !profile.is_empty() && profile != "Default" {
-            let hyprviz_dir = Path::new(HYPRVIZ_PROFILES_PATH);
-            let profile_filename = format!("{}.conf", profile);
-            base_path.join(hyprviz_dir).join(profile_filename)
+            base_path.join(HYPRVIZ_PROFILES_PATH).join(format!("{profile}.{extension}"))
+        } else if lua_config {
+            base_path.join(HYPRVIZ_LUA_CONFIG_PATH)
         } else {
             base_path.join(HYPRVIZ_CONFIG_PATH)
         }
+    } else if lua_config {
+        base_path.join(LUA_CONFIG_PATH)
     } else {
         base_path.join(CONFIG_PATH)
     }
@@ -380,53 +384,67 @@ pub fn update_source_line(config_path: &PathBuf, profile: &str) -> io::Result<()
     let content = fs::read_to_string(config_path)?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
-    let mut target_index = None;
-    for (i, line) in lines.iter().enumerate().rev() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("source = ./hyprviz") {
-            target_index = Some(i);
-            break;
+    if crate::lua_config::is_lua_config_path(config_path) {
+        if profile != "Default"
+            && (profile.is_empty()
+                || !profile
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid profile name"));
+        }
+        let module = if profile == "Default" {
+            "./hyprviz".to_string()
+        } else {
+            format!("./hyprviz/{profile}")
+        };
+        let module_literal = serde_json::to_string(&module)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let new_source = format!("require({module_literal})");
+        let target_index = lines.iter().enumerate().rev().find_map(|(index, line)| {
+            crate::lua_config::is_hyprviz_require_line(line).then_some(index)
+        });
+        if let Some(index) = target_index {
+            lines[index] = new_source;
+        } else {
+            lines.push(new_source);
+        }
+    } else {
+        let target_index = lines.iter().enumerate().rev().find_map(|(index, line)| {
+            line.trim().starts_with("source = ./hyprviz").then_some(index)
+        });
+        let new_source = if profile == "Default" {
+            "source = ./hyprviz.conf".to_string()
+        } else {
+            format!("source = ./hyprviz/{}.conf", profile)
+        };
+        if let Some(index) = target_index {
+            lines[index] = new_source;
+        } else {
+            lines.push(new_source);
         }
     }
 
-    let new_source = if profile == "Default" {
-        "source = ./hyprviz.conf".to_string()
-    } else {
-        format!("source = ./hyprviz/{}.conf", profile)
-    };
-
-    if let Some(idx) = target_index {
-        lines[idx] = new_source;
-    } else {
-        lines.push(new_source);
-    }
-
-    let new_content = lines.join("\n") + "\n";
-    atomic_write(config_path, &new_content)
+    atomic_write(config_path, &(lines.join("\n") + "\n"))
 }
 
 pub fn get_current_profile(file_content: &str) -> String {
-    let last_non_empty_line = file_content
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty());
-
+    if let Some(profile) = crate::lua_config::profile_name_from_lua(file_content) {
+        return profile;
+    }
+    let last_non_empty_line = file_content.lines().rev().find(|line| !line.trim().is_empty());
     if let Some(line) = last_non_empty_line {
         let prefix = "source = ./hyprviz/";
         let suffix = ".conf";
-
         if let Some(start_prefix_idx) = line.find(prefix) {
             let start_profile_idx = start_prefix_idx + prefix.len();
-
             let line_after_prefix = &line[start_profile_idx..];
             if let Some(start_suffix_idx_relative) = line_after_prefix.find(suffix) {
                 let start_suffix_idx_absolute = start_profile_idx + start_suffix_idx_relative;
                 let end_suffix_idx_absolute = start_suffix_idx_absolute + suffix.len();
-
                 let is_valid_ending = end_suffix_idx_absolute == line.len()
                     || line[end_suffix_idx_absolute..]
                         .starts_with(|c: char| c.is_whitespace() || c == '#');
-
                 if is_valid_ending && start_profile_idx < start_suffix_idx_absolute {
                     let extracted = &line[start_profile_idx..start_suffix_idx_absolute];
                     if !extracted.is_empty() {
@@ -436,35 +454,28 @@ pub fn get_current_profile(file_content: &str) -> String {
             }
         }
     }
-
     "Default".to_string()
 }
 
 /// Finds all files matching pattern `*.conf` in the hyprviz profile directory
 pub fn find_all_profiles() -> Option<Vec<String>> {
     let config_path = get_config_path(true, "None");
-
     let parent_dir = config_path.parent()?;
-
     let entries = fs::read_dir(parent_dir).ok()?;
-
+    let suffix = format!(".{}", config_path.extension()?.to_str()?);
     let mut profiles = Vec::new();
-    let suffix = ".conf";
-
     for entry in entries.flatten() {
         let file_name = match entry.file_name().into_string() {
             Ok(name) => name,
             Err(_) => continue,
         };
-        if file_name.ends_with(suffix) {
+        if file_name.ends_with(&suffix) {
             let profile_name = &file_name[..file_name.len() - suffix.len()];
-
             if !profile_name.is_empty() {
                 profiles.push(profile_name.to_string());
             }
         }
     }
-
     if profiles.is_empty() {
         None
     } else {
@@ -475,42 +486,41 @@ pub fn find_all_profiles() -> Option<Vec<String>> {
 /// Reads the main Hyprland config, filters out HyprViz profile sources, and expands it.
 pub fn expand_base_config() -> Result<String, Box<dyn Error>> {
     let config_path = get_config_path(false, "Default");
+    if crate::lua_config::is_lua_config_path(&config_path) {
+        return crate::lua_config::expand_lua_config(&config_path, None, true);
+    }
     let content = fs::read_to_string(&config_path)?;
-
-    let filtered_content = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("source") {
-                return !trimmed.contains("./hyprviz") && !trimmed.contains("hyprviz/");
-            }
-            true
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
-
+    let filtered_content = content.lines().filter(|line| {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("source") {
+            return !trimmed.contains("./hyprviz") && !trimmed.contains("hyprviz/");
+        }
+        true
+    }).collect::<Vec<&str>>().join("\n");
     expand_source_str(&config_path, &filtered_content)
 }
 
 /// Expands all `source = <path>` occurrences in file `entry_path` recursively from str
 pub fn expand_source_str(entry_path: &Path, entry: &str) -> Result<String, Box<dyn Error>> {
+    if crate::lua_config::is_lua_config_path(entry_path) {
+        return crate::lua_config::expand_lua_config(entry_path, Some(entry), false);
+    }
     let mut visited = HashSet::new();
-
     let mut env_vars = HashMap::new();
     let home = env::var("HOME").unwrap_or_default();
-    env_vars.insert("HOME".to_string(), home.clone());
-
+    env_vars.insert("HOME".to_string(), home);
     expand_file_recursive(entry_path, &mut visited, &mut env_vars, entry)
 }
 
 /// Expand all `source = <path>` occurrences in file `entry_path` recursively.
 pub fn expand_source(entry_path: &Path) -> Result<String, Box<dyn Error>> {
+    if crate::lua_config::is_lua_config_path(entry_path) {
+        return crate::lua_config::expand_lua_config(entry_path, None, false);
+    }
     let mut visited = HashSet::new();
-
     let mut env_vars = HashMap::new();
     let home = env::var("HOME").unwrap_or_default();
-    env_vars.insert("HOME".to_string(), home.clone());
-
+    env_vars.insert("HOME".to_string(), home);
     expand_file_recursive(entry_path, &mut visited, &mut env_vars, "")
 }
 
@@ -1957,7 +1967,9 @@ impl HistoryManager {
 }
 
 pub const CONFIG_PATH: &str = ".config/hypr/hyprland.conf";
+pub const LUA_CONFIG_PATH: &str = ".config/hypr/hyprland.lua";
 pub const HYPRVIZ_CONFIG_PATH: &str = ".config/hypr/hyprviz.conf";
+pub const HYPRVIZ_LUA_CONFIG_PATH: &str = ".config/hypr/hyprviz.lua";
 pub const HYPRVIZ_PROFILES_PATH: &str = ".config/hypr/hyprviz/";
 pub const HYPRVIZ_UI_STATE_PATH: &str = ".local/share/hyprviz/ui_state.json";
 
