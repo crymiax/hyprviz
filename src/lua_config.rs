@@ -791,40 +791,75 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "permission",
         lua.create_function(move |_, args: MultiValue| {
             let mut args = args.into_iter();
-            let first = args.next();
-            let (binary, kind, mode) = match first {
+            let (binary, kind, mode) = match args.next() {
                 Some(Value::Table(table)) => {
                     let value = lua_table_to_value(table, 0)?;
-                    if !table_has_only_keys(&value, &["binary", "type", "mode"]) {
+                    if !table_has_only_keys(&value, &["binary", "target", "type", "mode"]) {
                         return Err(mlua::Error::RuntimeError(
                             "hl.permission: unknown field in permission specification".to_string(),
                         ));
                     }
+                    if table_field(&value, "binary").is_some()
+                        && table_field(&value, "target").is_some()
+                    {
+                        return Err(mlua::Error::RuntimeError(
+                            "hl.permission: use either binary or target, not both".to_string(),
+                        ));
+                    }
+                    let read_string = |key: &str| match table_field(&value, key) {
+                        Some(LuaValue::Scalar(LuaScalar::String(value))) => {
+                            Some(value.clone())
+                        }
+                        _ => None,
+                    };
                     (
-                        table_string(&value, "binary"),
-                        table_string(&value, "type"),
-                        table_string(&value, "mode"),
+                        read_string("binary").or_else(|| read_string("target")),
+                        read_string("type"),
+                        read_string("mode"),
                     )
                 }
-                Some(binary) => (
-                    lua_value_as_string(&binary),
-                    args.next().as_ref().and_then(lua_value_as_string),
-                    args.next().as_ref().and_then(lua_value_as_string),
-                ),
-                None => (None, None, None),
+                Some(Value::String(binary)) => {
+                    let kind = match args.next() {
+                        Some(Value::String(value)) => Some(value.to_string_lossy().to_string()),
+                        _ => None,
+                    };
+                    let mode = match args.next() {
+                        Some(Value::String(value)) => Some(value.to_string_lossy().to_string()),
+                        _ => None,
+                    };
+                    (
+                        Some(binary.to_string_lossy().to_string()),
+                        kind,
+                        mode,
+                    )
+                }
+                _ => (None, None, None),
             };
+
             let (binary, kind, mode) = match (binary, kind, mode) {
-                (Some(binary), Some(kind), Some(mode))
-                    if !binary.is_empty() && !kind.is_empty() && !mode.is_empty() =>
-                {
+                (Some(binary), Some(kind), Some(mode)) if !binary.is_empty() => {
                     (binary, kind, mode)
                 }
                 _ => {
                     return Err(mlua::Error::RuntimeError(
-                        "hl.permission: expected binary, type, and mode".to_string(),
+                        "hl.permission: expected binary/target, type, and mode".to_string(),
                     ));
                 }
             };
+            if !matches!(
+                kind.as_str(),
+                "screencopy" | "cursorpos" | "plugin" | "keyboard" | "keeb" | "input-capture"
+            ) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "hl.permission: unknown permission type '{kind}'"
+                )));
+            }
+            if !matches!(mode.as_str(), "ask" | "allow" | "deny") {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "hl.permission: unknown permission mode '{mode}'"
+                )));
+            }
+
             append_output(
                 &permission_output,
                 format!("permission = {binary},{kind},{mode}"),
@@ -3086,6 +3121,34 @@ mod tests {
         for module in ["../outside", "..", "bad.name", "bad\\name"] {
             let source = format!("require('./hyprviz/{module}')");
             assert_eq!(profile_name_from_lua(&source), None, "{module}");
+        }
+    }
+
+    #[test]
+    fn accepts_native_permission_target_alias_and_validates_type_and_mode() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.permission({ target = "/usr/bin/app", type = "screencopy", mode = "allow" })"#),
+            false,
+        )
+        .unwrap();
+        assert!(
+            parsed.contains("permission = /usr/bin/app,screencopy,allow"),
+            "{parsed}"
+        );
+
+        for source in [
+            r#"hl.permission({ binary = "app", target = "other", type = "plugin", mode = "allow" })"#,
+            r#"hl.permission("app", "not-a-type", "allow")"#,
+            r#"hl.permission("app", "plugin", "not-a-mode")"#,
+        ] {
+            let error = expand_lua_config(
+                Path::new("/tmp/hyprland.lua"),
+                Some(source),
+                false,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("hl.permission"), "{source}: {error}");
         }
     }
 
