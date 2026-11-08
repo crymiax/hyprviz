@@ -2002,10 +2002,10 @@ fn serialize_windowrule_directive(value: &str) -> Option<String> {
             | "no_blur" | "no_shadow" | "no_anim" | "no_initial_focus" | "no_close"
             | "immediate" | "opaque" | "force_rgbx" | "sync_fullscreen"
             | "no_vrr" | "stay_focused" => table.push(format!("{effect} = true")),
-            "noblur" => table.push("blur = false".to_string()),
+            "noblur" => table.push("no_blur = true".to_string()),
             "noborder" => table.push("border_size = 0".to_string()),
-            "nomaxsize" => table.push("max_size = false".to_string()),
-            _ => {}
+            "nomaxsize" => table.push("no_max_size = true".to_string()),
+            _ => return None,
         }
     }
     Some(format!("hl.window_rule({{ {} }})\n", table.join(", ")))
@@ -2025,7 +2025,7 @@ fn serialize_layer_rule_directive(value: &str) -> Option<String> {
             | "no_anim" | "no_screen_share" => {
                 table.push(format!("{effect} = true"));
             }
-            _ => {}
+            _ => return None,
         }
     }
     Some(format!("hl.layer_rule({{ {} }})\n", table.join(", ")))
@@ -2086,7 +2086,7 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
     }
 }
 
-pub fn hyprlang_to_lua(source: &str) -> String {
+pub fn hyprlang_to_lua(source: &str) -> Result<String, String> {
     let mut root = ConfigNode::default();
     let mut directives = Vec::<(String, String)>::new();
     let mut devices = Vec::<Vec<(String, String)>>::new();
@@ -2151,26 +2151,51 @@ pub fn hyprlang_to_lua(source: &str) -> String {
         }
         output.push_str("})\n");
     }
-    for device in devices {
-        let fields = device.iter()
-            .map(|(key, value)| lua_table_field(key, value))
-            .collect::<Vec<_>>();
-        if fields.iter().any(|field| field.starts_with("name = ")) {
-            output.push_str(&format!("hl.device({{ {} }})\n", fields.join(", ")));
+    const DEVICE_FIELDS: &[&str] = &[
+        "name", "sensitivity", "accel_profile", "rotation", "kb_file", "kb_layout",
+        "kb_variant", "kb_options", "kb_rules", "kb_model", "repeat_rate", "repeat_delay",
+        "natural_scroll", "tap_button_map", "numlock_by_default", "resolve_binds_by_sym",
+        "disable_while_typing", "clickfinger_behavior", "middle_button_emulation",
+        "tap_to_click", "tap_and_drag", "drag_lock", "left_handed", "scroll_method",
+        "scroll_button", "scroll_button_lock", "scroll_points", "scroll_factor", "transform",
+        "output", "enabled", "region_position", "absolute_region_position", "region_size",
+        "relative_input", "active_area_position", "active_area_size", "flip_x", "flip_y",
+        "drag_3fg", "keybinds", "share_states", "release_pressed_on_close", "tags",
+    ];
+    for (index, device) in devices.iter().enumerate() {
+        let mut fields = Vec::new();
+        let mut has_name = false;
+        for (key, value) in device {
+            if !DEVICE_FIELDS.contains(&key.as_str()) {
+                return Err(format!(
+                    "cannot save Lua configuration: unsupported device field '{}' in device block {}",
+                    key,
+                    index + 1
+                ));
+            }
+            has_name |= key == "name";
+            fields.push(lua_table_field(key, value));
         }
-    }
-    for (key, value) in directives {
-        if let Some(line) = serialize_directive(&key, &value) {
-            output.push_str(&line);
-        } else {
-            output.push_str(&format!(
-                "-- Legacy directive needs a Lua API mapping: {}\n",
-                lua_quote(&format!("{key} = {value}"))
+        if !has_name {
+            return Err(format!(
+                "cannot save Lua configuration: device block {} has no name",
+                index + 1
             ));
         }
+        output.push_str(&format!("hl.device({{ {} }})\n", fields.join(", ")));
+    }
+
+    for (key, value) in directives {
+        let line = serialize_directive(&key, &value).ok_or_else(|| {
+            format!(
+                "cannot save Lua configuration: no safe native Lua mapping for '{} = {}'",
+                key, value
+            )
+        })?;
+        output.push_str(&line);
     }
     output.push_str("-- END HYPRVIZ MANAGED CONFIG\n");
-    output
+    Ok(output)
 }
 
 pub fn merge_managed_lua(existing: &str, generated: &str) -> String {
@@ -2214,6 +2239,15 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_drop_unknown_device_fields() {
+        let error = hyprlang_to_lua(
+            "device {\n    name = example\n    unknown_option = true\n}\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown_option"), "{error}");
+    }
+
+    #[test]
     fn preserves_repeated_directives_inside_sections() {
         let source = concat!(
             "animations {\n",
@@ -2221,7 +2255,7 @@ mod tests {
             "    animation = workspaces, 1, 5, default\n",
             "}\n",
         );
-        let generated = hyprlang_to_lua(source);
+        let generated = hyprlang_to_lua(source).unwrap();
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
             Some(&generated),
@@ -2233,9 +2267,8 @@ mod tests {
 
     #[test]
     fn preserves_all_positional_monitor_fields() {
-        let source = concat!(
-            "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\n",
-        let generated = hyprlang_to_lua(source);
+        let source = "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\n";
+        let generated = hyprlang_to_lua(source).unwrap();
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(
@@ -2251,7 +2284,7 @@ mod tests {
             "bindn = , Q, exec, notify-send non-consuming\n",
             "binds = SUPER, Q, exec, notify-send universal\n",
         );
-        let generated = hyprlang_to_lua(source);
+        let generated = hyprlang_to_lua(source).unwrap();
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("bindm = ,mouse:272,exec,notify-send mouse"), "{parsed}");
@@ -2262,7 +2295,7 @@ mod tests {
     #[test]
     fn preserves_hashes_and_commas_inside_quoted_directive_values() {
         let generated =
-            hyprlang_to_lua("env = GTK_THEME,\"Adwaita # dark, compact\"\n");
+            hyprlang_to_lua("env = GTK_THEME,\"Adwaita # dark, compact\"\n").unwrap();
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
             Some(&generated),
@@ -2276,15 +2309,22 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
-        let generated = hyprlang_to_lua("exec-once = notify-send\nunknown-setting = keep-me\n");
+    fn refuses_to_drop_unmapped_legacy_directives() {
+        let error = hyprlang_to_lua(
+            "exec-once = notify-send\nunknown-setting = keep-me\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown-setting"), "{error}");
+    }
+
+    #[test]
+    fn serializes_startup_commands_using_native_hyprland_api() {
+        let generated = hyprlang_to_lua("exec-once = notify-send\n").unwrap();
         assert!(!generated.contains("hl.raw("));
         assert!(generated.contains("hl.on(\"hyprland.start\""));
-        assert!(generated.contains("Legacy directive needs a Lua API mapping"));
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("exec-once = notify-send"), "{parsed}");
-        assert!(!parsed.contains("unknown-setting = keep-me"), "{parsed}");
     }
 
     #[test]
@@ -2524,7 +2564,7 @@ mod tests {
 
     #[test]
     fn serializes_and_merges_a_managed_lua_block() {
-        let generated = hyprlang_to_lua("general {\n    gaps_in = 5\n}\n");
+        let generated = hyprlang_to_lua("general {\n    gaps_in = 5\n}\n").unwrap();
         assert!(generated.contains("hl.config({"));
         assert!(generated.contains("gaps_in = 5"));
         let merged = merge_managed_lua(
