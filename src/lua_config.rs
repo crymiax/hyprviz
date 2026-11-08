@@ -163,10 +163,33 @@ fn execute_lua_config(
     let globals = lua.globals();
     let os: Table = globals.get("os")?;
     let safe_os = lua.create_table()?;
-    for name in ["clock", "date", "difftime", "getenv", "time"] {
+    for name in ["clock", "date", "difftime", "time"] {
         let value: Value = os.get(name)?;
         safe_os.set(name, value)?;
     }
+    safe_os.set(
+        "getenv",
+        lua.create_function(|_, name: String| {
+            const ALLOWED: &[&str] = &[
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_RUNTIME_DIR",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XDG_SESSION_TYPE",
+                "LANG",
+                "LC_ALL",
+                "PATH",
+                "TERM",
+            ];
+            if ALLOWED.contains(&name.as_str()) {
+                Ok(std::env::var(name).ok())
+            } else {
+                Ok(None)
+            }
+        })?,
+    )?;
     globals.set("os", safe_os.clone())?;
     let package: Table = globals.get("package")?;
     let loaded_modules: Table = package.get("loaded")?;
@@ -195,24 +218,36 @@ fn execute_lua_config(
 
     let module_stack = Rc::new(RefCell::new(vec![entry_path.to_path_buf()]));
     let globals = lua.globals();
-    let native_require: Function = globals.get("require")?;
     let package: Table = globals.get("package")?;
     let old_package_path: String = package.get("path")?;
+    let lua_search_paths = old_package_path
+        .split(';')
+        .filter(|pattern| pattern.ends_with("?.lua") || pattern.ends_with("?/init.lua"))
+        .collect::<Vec<_>>()
+        .join(";");
     package.set(
         "path",
         format!(
             "{};{};{}",
             config_dir.join("?.lua").display(),
             config_dir.join("?/init.lua").display(),
-            old_package_path
+            lua_search_paths
         ),
     )?;
+    package.set("cpath", "")?;
+    package.set("loadlib", Value::Nil)?;
+    let searchers: Table = package.get("searchers")?;
+    for index in (3..=searchers.raw_len()).rev() {
+        searchers.raw_set(index, Value::Nil)?;
+    }
 
     let loaded: Table = package.get("loaded")?;
+    let preload: Table = package.get("preload")?;
     let package_searchpath: Function = package.get("searchpath")?;
     let require_package = package.clone();
     let require_stack = Rc::clone(&module_stack);
     let require_config_dir = config_dir.clone();
+    let require_preload = preload.clone();
     let require_fn = lua.create_function(move |lua, module: String| {
         let cached: Value = loaded.get(module.as_str())?;
         if !matches!(&cached, Value::Nil | Value::Boolean(false)) {
@@ -230,17 +265,33 @@ fn execute_lua_config(
             .cloned()
             .unwrap_or_else(|| require_config_dir.join("hyprland.lua"));
 
+        let package_candidate = {
+            let package_path: String = require_package.get("path")?;
+            package_searchpath
+                .call::<Option<String>>((module.as_str(), package_path))?
+                .map(PathBuf::from)
+        };
         let module_path = resolve_module_path(&module, &caller, &require_config_dir)
             .or_else(|| {
-                let package_path: String = require_package.get("path").ok()?;
-                package_searchpath
-                    .call::<Option<String>>((module.as_str(), package_path))
-                    .ok()
-                    .flatten()
-                    .map(PathBuf::from)
+                package_candidate
+                    .as_deref()
+                    .and_then(|path| confine_to_config_root(path, &require_config_dir))
             });
         let Some(module_path) = module_path else {
-            return native_require.call::<Value>(module);
+            let preload_loader: Value = require_preload.get(module.as_str())?;
+            if let Value::Function(loader) = preload_loader {
+                let value = loader.call::<Value>(module.as_str())?;
+                let value = if matches!(value, Value::Nil) {
+                    Value::Boolean(true)
+                } else {
+                    value
+                };
+                loaded.set(module, value.clone())?;
+                return Ok(value);
+            }
+            return Err(mlua::Error::RuntimeError(format!(
+                "Lua module '{module}' was not found inside the Hyprland config directory"
+            )));
         };
 
         loaded.set(module.as_str(), true)?;
@@ -335,6 +386,16 @@ fn execute_lua_config(
     })
 }
 
+fn confine_to_config_root(path: &Path, config_dir: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(config_dir).ok()?;
+    let path = fs::canonicalize(path).ok()?;
+    if path.starts_with(&root) && path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
 fn resolve_module_path(module: &str, caller: &Path, config_dir: &Path) -> Option<PathBuf> {
     let caller_dir = caller.parent().unwrap_or(config_dir);
     let raw = PathBuf::from(module);
@@ -356,7 +417,9 @@ fn resolve_module_path(module: &str, caller: &Path, config_dir: &Path) -> Option
         candidates.push(relative.with_extension("lua"));
     }
     candidates.push(relative.join("init.lua"));
-    candidates.into_iter().find(|path| path.is_file())
+    candidates
+        .into_iter()
+        .find_map(|path| confine_to_config_root(&path, config_dir))
 }
 
 fn require_modules(source: &str) -> Vec<String> {
@@ -3049,6 +3112,31 @@ mod tests {
             Some("local home = os.getenv('HOME') or ''\\nlocal os_module = require('os')\\nassert(os_module.execute == nil and os_module.remove == nil)\\nhl.config({ general = { gaps_in = #home } })"),
             false,
         ).is_ok());
+    }
+
+    #[test]
+    fn blocks_modules_outside_the_config_directory_and_native_module_loaders() {
+        let dir = test_dir("module-boundary");
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(dir.join("outside.lua"), "return { secret = 'outside' }\n").unwrap();
+
+        let error = expand_lua_config(
+            &config_dir.join("hyprland.lua"),
+            Some("require('../outside')"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("config directory"), "{error}");
+
+        let error = expand_lua_config(
+            &config_dir.join("hyprland.lua"),
+            Some("assert(package.loadlib == nil); assert(package.cpath == '')"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("assertion failed"), "{error}");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
