@@ -2214,8 +2214,7 @@ mod tests {
     #[test]
     fn preserves_all_positional_monitor_fields() {
         let source = concat!(
-            "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\\n",
-            "mirror, HDMI-A-1\n",
+            "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\n",
         );
         let generated = hyprlang_to_lua(source);
         let parsed =
