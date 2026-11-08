@@ -12,8 +12,18 @@ use std::{
 };
 
 #[derive(Debug, Clone)]
+enum LuaScalar {
+    String(String),
+    Boolean(bool),
+    Integer(i64),
+    Number(f64),
+    Nil,
+    Opaque(String),
+}
+
+#[derive(Debug, Clone)]
 enum LuaValue {
-    Scalar(String),
+    Scalar(LuaScalar),
     Table(Vec<(Option<String>, LuaValue)>),
 }
 
@@ -939,14 +949,18 @@ fn lua_table_to_value(table: Table, depth: usize) -> LuaResult<LuaValue> {
 
 fn lua_value_to_value(value: Value, depth: usize) -> LuaResult<LuaValue> {
     if depth > 64 {
-        return Ok(LuaValue::Scalar("<maximum Lua table depth>".to_string()));
+        return Ok(LuaValue::Scalar(LuaScalar::Opaque(
+            "<maximum Lua table depth>".to_string(),
+        )));
     }
     match value {
-        Value::Nil => Ok(LuaValue::Scalar("nil".to_string())),
-        Value::Boolean(value) => Ok(LuaValue::Scalar(value.to_string())),
-        Value::Integer(value) => Ok(LuaValue::Scalar(value.to_string())),
-        Value::Number(value) => Ok(LuaValue::Scalar(value.to_string())),
-        Value::String(value) => Ok(LuaValue::Scalar(value.to_string_lossy().to_string())),
+        Value::Nil => Ok(LuaValue::Scalar(LuaScalar::Nil)),
+        Value::Boolean(value) => Ok(LuaValue::Scalar(LuaScalar::Boolean(value))),
+        Value::Integer(value) => Ok(LuaValue::Scalar(LuaScalar::Integer(value))),
+        Value::Number(value) => Ok(LuaValue::Scalar(LuaScalar::Number(value))),
+        Value::String(value) => Ok(LuaValue::Scalar(LuaScalar::String(
+            value.to_string_lossy().to_string(),
+        ))),
         Value::Table(table) => {
             let sequence_len = table.raw_len();
             let mut entries = Vec::new();
@@ -974,12 +988,20 @@ fn lua_value_to_value(value: Value, depth: usize) -> LuaResult<LuaValue> {
             }
             Ok(LuaValue::Table(entries))
         }
-        Value::Function(_) => Ok(LuaValue::Scalar("<Lua function>".to_string())),
-        Value::Thread(_) => Ok(LuaValue::Scalar("<Lua thread>".to_string())),
-        Value::UserData(_) => Ok(LuaValue::Scalar("<Lua userdata>".to_string())),
-        Value::Error(error) => Ok(LuaValue::Scalar(error.to_string())),
-        Value::LightUserData(_) => Ok(LuaValue::Scalar("<Lua pointer>".to_string())),
-        _ => Ok(LuaValue::Scalar("<Lua value>".to_string())),
+        Value::Function(_) => Ok(LuaValue::Scalar(LuaScalar::Opaque(
+            "<Lua function>".to_string(),
+        ))),
+        Value::Thread(_) => Ok(LuaValue::Scalar(LuaScalar::Opaque(
+            "<Lua thread>".to_string(),
+        ))),
+        Value::UserData(_) => Ok(LuaValue::Scalar(LuaScalar::Opaque(
+            "<Lua userdata>".to_string(),
+        ))),
+        Value::Error(error) => Ok(LuaValue::Scalar(LuaScalar::Opaque(error.to_string()))),
+        Value::LightUserData(_) => Ok(LuaValue::Scalar(LuaScalar::Opaque(
+            "<Lua pointer>".to_string(),
+        ))),
+        _ => Ok(LuaValue::Scalar(LuaScalar::Opaque("<Lua value>".to_string()))),
     }
 }
 
@@ -1002,22 +1024,11 @@ fn lua_value_to_ml_value(lua: &Lua, value: &LuaValue, depth: usize) -> LuaResult
         return Ok(Value::Nil);
     }
     match value {
-        LuaValue::Scalar(value) => {
-            let value = value.trim();
-            if value == "nil" {
-                Ok(Value::Nil)
-            } else if value == "true" {
-                Ok(Value::Boolean(true))
-            } else if value == "false" {
-                Ok(Value::Boolean(false))
-            } else if let Ok(value) = value.parse::<i64>() {
-                Ok(Value::Integer(value))
-            } else if let Ok(value) = value.parse::<f64>() {
-                Ok(Value::Number(value))
-            } else {
-                Ok(Value::String(lua.create_string(value)?))
-            }
-        }
+        LuaValue::Scalar(LuaScalar::String(value)) => Ok(Value::String(lua.create_string(value)?)),
+        LuaValue::Scalar(LuaScalar::Boolean(value)) => Ok(Value::Boolean(*value)),
+        LuaValue::Scalar(LuaScalar::Integer(value)) => Ok(Value::Integer(*value)),
+        LuaValue::Scalar(LuaScalar::Number(value)) => Ok(Value::Number(*value)),
+        LuaValue::Scalar(LuaScalar::Nil | LuaScalar::Opaque(_)) => Ok(Value::Nil),
         LuaValue::Table(entries) => {
             let table = lua.create_table()?;
             let mut sequence_index = 1usize;
@@ -1488,14 +1499,11 @@ fn table_bool(table: &LuaValue, key: &str) -> Option<bool> {
 
 fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
     match value {
-        LuaValue::Scalar(value) => {
-            let value = value.trim();
-            if value == "nil" || value.starts_with("<Lua ") {
-                None
-            } else {
-                Some(value.to_string())
-            }
-        }
+        LuaValue::Scalar(LuaScalar::String(value)) => Some(value.clone()),
+        LuaValue::Scalar(LuaScalar::Boolean(value)) => Some(value.to_string()),
+        LuaValue::Scalar(LuaScalar::Integer(value)) => Some(value.to_string()),
+        LuaValue::Scalar(LuaScalar::Number(value)) => Some(value.to_string()),
+        LuaValue::Scalar(LuaScalar::Nil | LuaScalar::Opaque(_)) => None,
         LuaValue::Table(entries) => {
             if let Some((_, colors)) = entries
                 .iter()
@@ -1525,9 +1533,9 @@ fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
                     None => colors,
                 });
             }
-            // Hyprland accepts CSS-gap and vec2 tables for some config values.
-            // Convert those known value shapes instead of confusing them with sections.
-            let keys = entries.iter()
+
+            let keys = entries
+                .iter()
                 .filter_map(|(key, _)| key.as_deref())
                 .collect::<Vec<_>>();
             if !keys.is_empty()
@@ -1565,6 +1573,36 @@ fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
     }
 }
 
+fn config_value_to_hyprlang(value: &LuaValue) -> Option<String> {
+    match value {
+        LuaValue::Scalar(LuaScalar::String(value)) => {
+            let ambiguous = value == "true"
+                || value == "false"
+                || value == "nil"
+                || value.parse::<i64>().is_ok()
+                || value.parse::<f64>().is_ok()
+                || value.contains(',')
+                || value.contains('#')
+                || value.contains('"')
+                || value.contains('\\')
+                || value.contains('\n')
+                || value.contains('\r')
+                || value.starts_with(char::is_whitespace)
+                || value.ends_with(char::is_whitespace);
+            Some(if ambiguous {
+                format!("\"{}\"", value
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r"))
+            } else {
+                value.clone()
+            })
+        }
+        _ => value_to_hyprlang(value),
+    }
+}
+
 fn emit_config_table(table: &LuaValue, path: &mut Vec<String>, lines: &mut Vec<String>) {
     let LuaValue::Table(entries) = table else {
         return;
@@ -1580,7 +1618,7 @@ fn emit_config_table(table: &LuaValue, path: &mut Vec<String>, lines: &mut Vec<S
                 emit_config_section(children, &full_path, lines);
             }
             other => {
-                if let Some(value) = value_to_hyprlang(other)
+                if let Some(value) = config_value_to_hyprlang(other)
                     && full_path.len() >= 2
                 {
                     let category = full_path.remove(0);
@@ -1626,7 +1664,7 @@ fn emit_section_body(
                 lines.push(format!("{}}}", "    ".repeat(depth)));
             }
             other => {
-                if let Some(value) = value_to_hyprlang(other) {
+                if let Some(value) = config_value_to_hyprlang(other) {
                     lines.push(format!("{}{} = {value}", "    ".repeat(depth), key));
                 }
             }
@@ -2530,6 +2568,23 @@ mod tests {
 
     #[test]
     fn evaluates_config_tables_and_get_config_as_lua_values() {
+        let type_check = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"
+                hl.config({ test = { quoted_true = "true", quoted_number = "123", bool = true, number = 123 } })
+                local value = hl.get_config("test")
+                assert(type(value.quoted_true) == "string" and value.quoted_true == "true")
+                assert(type(value.quoted_number) == "string" and value.quoted_number == "123")
+                assert(type(value.bool) == "boolean" and value.bool == true)
+                assert(type(value.number) == "number" and value.number == 123)
+                "#,
+            ),
+            false,
+        );
+        assert!(type_check.is_ok(), "{type_check:?}");
+
+
         let parsed = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
             Some(
