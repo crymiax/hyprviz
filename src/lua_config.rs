@@ -1097,6 +1097,17 @@ fn flatten_config_values(
 }
 
 fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
+    const ALLOWED: &[&str] = &[
+        "output", "mode", "position", "scale", "reserved", "reserved_area", "disabled",
+        "transform", "mirror", "bitdepth", "cm", "sdr_eotf", "sdrbrightness",
+        "sdrsaturation", "vrr", "icc", "supports_wide_color", "supports_hdr",
+        "sdr_min_luminance", "sdr_max_luminance", "min_luminance", "max_luminance",
+        "max_avg_luminance",
+    ];
+    if !table_has_only_keys(value, ALLOWED) {
+        return None;
+    }
+
     let output = table_string(value, "output")?;
     let mut fields = vec![
         output,
@@ -1335,36 +1346,57 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
 }
 
 fn window_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
+    const EFFECTS: &[&str] = &[
+        "float", "tile", "fullscreen", "maximize", "center", "pseudo", "no_initial_focus",
+        "pin", "fullscreen_state", "move", "size", "monitor", "workspace", "group",
+        "suppress_event", "content", "no_close_for", "scrolling_width", "rounding",
+        "border_size", "rounding_power", "scroll_mouse", "scroll_touchpad", "animation",
+        "idle_inhibit", "opacity", "tag", "max_size", "min_size", "border_color",
+        "persistent_size", "allows_input", "dim_around", "decorate", "focus_on_activate",
+        "keep_aspect_ratio", "nearest_neighbor", "no_anim", "no_blur", "no_dim", "no_focus",
+        "no_follow_mouse", "no_max_size", "no_shadow", "no_glow", "no_wobble",
+        "no_shortcuts_inhibit", "opaque", "force_rgbx", "sync_fullscreen", "immediate",
+        "xray", "render_unfocused", "no_screen_share", "no_vrr", "no_auto_hdr",
+        "stay_focused", "confine_pointer", "no_xdg_drags", "tonemap",
+    ];
     let LuaValue::Table(entries) = value else {
         return None;
     };
     let mut effects = Vec::new();
     let mut matches = Vec::new();
 
-    for (key, value) in entries {
+    for (key, field_value) in entries {
         let Some(key) = key.as_deref() else {
-            continue;
+            return None;
         };
         if key == "name" || key == "enabled" {
             continue;
         }
         if key == "match" {
-            if let LuaValue::Table(properties) = value {
-                for (property, value) in properties {
-                    let Some(property) = property.as_deref() else {
-                        continue;
-                    };
-                    let value = value_to_hyprlang(value)?;
-                    matches.push(format!("{property}:{value}"));
+            let LuaValue::Table(properties) = field_value else {
+                return None;
+            };
+            for (property, matcher) in properties {
+                let Some(property) = property.as_deref() else {
+                    return None;
+                };
+                let matcher = value_to_hyprlang(matcher)?;
+                matches.push(format!("{property}:{matcher}"));
+            }
+            continue;
+        }
+
+        if !EFFECTS.contains(&key) {
+            return None;
+        }
+        match field_value {
+            LuaValue::Scalar(LuaScalar::Boolean(enabled)) => {
+                if *enabled {
+                    effects.push(key.to_string());
                 }
             }
-        } else {
-            let value = value_to_hyprlang(value)?;
-            if value == "true" {
-                effects.push(key.to_string());
-            } else if value == "false" {
-                effects.push(format!("no{key}"));
-            } else {
+            other => {
+                let value = value_to_hyprlang(other)?;
                 effects.push(format!("{key} {value}"));
             }
         }
@@ -1380,53 +1412,62 @@ fn window_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
     ))
 }
 
+
 fn layer_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
+    const EFFECTS: &[&str] = &[
+        "no_anim", "blur", "blur_popups", "ignore_alpha", "dim_around", "xray",
+        "animation", "order", "above_lock", "no_screen_share",
+    ];
     let LuaValue::Table(entries) = value else {
         return None;
     };
     let mut namespace = None;
     let mut effects = Vec::new();
-    for (key, value) in entries {
+    for (key, field_value) in entries {
         let Some(key) = key.as_deref() else {
-            continue;
+            return None;
         };
         if key == "match" {
-            namespace = table_string(value, "namespace");
-        } else if key != "name" && key != "enabled" {
-            let value = value_to_hyprlang(value)?;
-            if value == "true" {
-                effects.push(key.to_string());
-            } else if value == "false" {
-                effects.push(format!("no{key}"));
-            } else {
+            namespace = table_string(field_value, "namespace");
+            continue;
+        }
+        if key == "name" || key == "enabled" {
+            continue;
+        }
+        if !EFFECTS.contains(&key) {
+            return None;
+        }
+        match field_value {
+            LuaValue::Scalar(LuaScalar::Boolean(enabled)) => {
+                if *enabled {
+                    effects.push(key.to_string());
+                }
+            }
+            other => {
+                let value = value_to_hyprlang(other)?;
                 effects.push(format!("{key} {value}"));
             }
         }
     }
+    if effects.is_empty() {
+        return None;
+    }
     Some(format!("layerrule = {},{}", effects.join(" "), namespace?))
 }
 
+
 fn workspace_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
+    const FIELDS: &[&str] = &[
+        "workspace", "monitor", "default", "persistent", "gaps_in", "gaps_out",
+        "float_gaps", "border_size", "no_border", "no_rounding", "decorate",
+        "no_shadow", "on_created_empty", "default_name", "layout", "animation",
+    ];
+    if !table_has_only_keys(value, FIELDS) {
+        return None;
+    }
     let workspace = table_string(value, "workspace")?;
     let mut fields = vec![workspace];
-    for key in [
-        "monitor",
-        "default",
-        "persistent",
-        "gaps_in",
-        "gaps_out",
-        "float_gaps",
-        "border_size",
-        "no_border",
-        "no_rounding",
-        "decorate",
-        "no_shadow",
-        "on_created_empty",
-        "default_name",
-        "layout",
-        "animation",
-        "enabled",
-    ] {
+    for key in FIELDS.iter().copied().filter(|key| *key != "workspace") {
         if let Some(value) = table_string(value, key) {
             fields.push(format!("{key}:{value}"));
         }
@@ -1434,7 +1475,12 @@ fn workspace_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
     Some(format!("workspace = {}", fields.join(", ")))
 }
 
+
 fn animation_to_hyprlang(value: &LuaValue) -> Option<String> {
+    const FIELDS: &[&str] = &["leaf", "enabled", "speed", "bezier", "spring", "style"];
+    if !table_has_only_keys(value, FIELDS) || table_string(value, "bezier").is_some() && table_string(value, "spring").is_some() {
+        return None;
+    }
     let leaf = table_string(value, "leaf")?;
     let enabled = table_string(value, "enabled").unwrap_or_else(|| "1".to_string());
     let speed = table_string(value, "speed").unwrap_or_else(|| "7".to_string());
@@ -1447,16 +1493,24 @@ fn animation_to_hyprlang(value: &LuaValue) -> Option<String> {
     ))
 }
 
+
 fn gesture_to_hyprlang(value: &LuaValue) -> Option<String> {
+    if !table_has_only_keys(value, &["fingers", "direction", "action"]) {
+        return None;
+    }
     let fingers = table_string(value, "fingers")?;
     let direction = table_string(value, "direction")?;
     let action = table_string(value, "action")?;
     Some(format!("gesture = {fingers},{direction},{action}"))
 }
 
+
 fn curve_to_hyprlang(name: &str, definition: &LuaValue) -> Option<String> {
     match table_string(definition, "type")?.as_str() {
         "bezier" => {
+            if !table_has_only_keys(definition, &["type", "points"]) {
+                return None;
+            }
             let points = table_field(definition, "points").and_then(as_array)?;
             if points.len() != 2 {
                 return None;
@@ -1475,6 +1529,9 @@ fn curve_to_hyprlang(name: &str, definition: &LuaValue) -> Option<String> {
             Some(format!("bezier = {name},{}", values.join(",")))
         }
         "spring" => {
+            if !table_has_only_keys(definition, &["type", "mass", "stiffness", "damping"]) {
+                return None;
+            }
             let mass = table_string(definition, "mass")?;
             let stiffness = table_string(definition, "stiffness")?;
             let damping = table_string(definition, "damping")?;
@@ -1484,11 +1541,27 @@ fn curve_to_hyprlang(name: &str, definition: &LuaValue) -> Option<String> {
     }
 }
 
+
 fn generic_section_to_hyprlang(
     section: &str,
     value: &LuaValue,
     required_key: &str,
 ) -> Option<String> {
+    const DEVICE_FIELDS: &[&str] = &[
+        "name", "sensitivity", "accel_profile", "rotation", "kb_file", "kb_layout",
+        "kb_variant", "kb_options", "kb_rules", "kb_model", "repeat_rate", "repeat_delay",
+        "natural_scroll", "tap_button_map", "numlock_by_default", "resolve_binds_by_sym",
+        "disable_while_typing", "clickfinger_behavior", "middle_button_emulation",
+        "tap_to_click", "tap_and_drag", "drag_lock", "left_handed", "scroll_method",
+        "scroll_button", "scroll_button_lock", "scroll_points", "scroll_factor", "transform",
+        "output", "enabled", "region_position", "absolute_region_position", "region_size",
+        "relative_input", "active_area_position", "active_area_size", "flip_x", "flip_y",
+        "drag_3fg", "keybinds", "share_states", "release_pressed_on_close", "tags",
+    ];
+    if !table_has_only_keys(value, DEVICE_FIELDS) {
+        return None;
+    }
+
     let LuaValue::Table(entries) = value else {
         return None;
     };
@@ -1535,6 +1608,16 @@ fn table_bool(table: &LuaValue, key: &str) -> Option<bool> {
         LuaValue::Scalar(LuaScalar::Boolean(value)) => Some(*value),
         _ => None,
     }
+}
+
+fn table_has_only_keys(value: &LuaValue, allowed: &[&str]) -> bool {
+    let LuaValue::Table(entries) = value else {
+        return false;
+    };
+    entries.iter().all(|(key, _)| {
+        key.as_deref()
+            .is_some_and(|key| allowed.contains(&key))
+    })
 }
 
 fn value_to_hyprlang(value: &LuaValue) -> Option<String> {
@@ -2605,11 +2688,31 @@ mod tests {
     fn rejects_unsupported_bind_dispatchers_instead_of_ignoring_them() {
         let error = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
-            Some(r#"hl.bind("SUPER + Q", hl.dsp.window.fullscreen_state({ internal = 1, client = 2 }))"#),
+            Some(r#"hl.bind("SUPER + Q", hl.dsp.window.clear_tags())"#),
             false,
         )
         .unwrap_err();
         assert!(error.to_string().contains("cannot be represented"), "{error}");
+    }
+
+    #[test]
+    fn rejects_unknown_window_rule_fields_and_omits_false_boolean_effects() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.window_rule({ match = { class = "kitty" }, unknown_effect = true })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("hl.window_rule"), "{error}");
+
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.window_rule({ match = { class = "kitty" }, float = false, no_blur = true })"#),
+            false,
+        )
+        .unwrap();
+        assert!(parsed.contains("no_blur"), "{parsed}");
+        assert!(!parsed.contains("nofloat"), "{parsed}");
     }
 
     #[test]
