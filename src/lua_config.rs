@@ -576,7 +576,7 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         lua.create_function(move |_, table: Table| {
             let value = lua_table_to_value(table, 0)?;
             let mut lines = Vec::new();
-            emit_config_table(&value, &mut Vec::new(), &mut lines);
+            emit_config_table(&value, &mut Vec::new(), &mut lines)?;
             append_output(&config_output, lines.join("\n"));
             flatten_config_values(&value, "", &mut *config_values.borrow_mut());
             Ok(())
@@ -1660,14 +1660,11 @@ fn generic_section_to_hyprlang(
     };
     let mut lines = Vec::new();
     for (key, value) in entries {
-        let Some(key) = key.as_deref() else {
-            continue;
-        };
-        if let Some(value) = value_to_hyprlang(value) {
-            lines.push(format!("    {key} = {value}"));
-        }
+        let key = key.as_deref()?;
+        let value = value_to_hyprlang(value)?;
+        lines.push(format!("    {key} = {value}"));
     }
-    if !entries.iter().any(|(key, _)| key.as_deref() == Some(required_key)) {
+    if table_string(value, required_key).is_none() {
         return None;
     }
     Some(format!("{section} {{\n{}\n}}", lines.join("\n")))
@@ -1819,13 +1816,21 @@ fn config_value_to_hyprlang(value: &LuaValue) -> Option<String> {
     }
 }
 
-fn emit_config_table(table: &LuaValue, path: &mut Vec<String>, lines: &mut Vec<String>) {
+fn emit_config_table(
+    table: &LuaValue,
+    path: &mut Vec<String>,
+    lines: &mut Vec<String>,
+) -> LuaResult<()> {
     let LuaValue::Table(entries) = table else {
-        return;
+        return Err(mlua::Error::RuntimeError(
+            "hl.config: expected a table of configuration categories".to_string(),
+        ));
     };
     for (key, value) in entries {
         let Some(key) = key.as_deref() else {
-            continue;
+            return Err(mlua::Error::RuntimeError(
+                "hl.config: configuration table keys must be strings".to_string(),
+            ));
         };
         let mut full_path = path.clone();
         full_path.extend(key.split('.').map(str::to_string));
@@ -1834,44 +1839,59 @@ fn emit_config_table(table: &LuaValue, path: &mut Vec<String>, lines: &mut Vec<S
                 if children.iter().any(|(key, _)| key.is_some())
                     && value_to_hyprlang(value).is_none() =>
             {
-                emit_config_section(children, &full_path, lines);
+                emit_config_section(children, &full_path, lines)?;
             }
             other => {
-                if let Some(value) = config_value_to_hyprlang(other)
-                    && full_path.len() >= 2
-                {
-                    let category = full_path.remove(0);
-                    let option = full_path.join(".");
-                    lines.push(format!("{category} {{\n    {option} = {value}\n}}\n"));
+                if full_path.len() < 2 {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "hl.config: '{}' must be inside a Hyprland configuration category",
+                        full_path.join(".")
+                    )));
                 }
+                let value = config_value_to_hyprlang(other).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!(
+                        "hl.config: unsupported value for '{}'",
+                        full_path.join(".")
+                    ))
+                })?;
+                let mut full_path = full_path;
+                let category = full_path.remove(0);
+                let option = full_path.join(".");
+                lines.push(format!("{category} {{\n    {option} = {value}\n}}\n"));
             }
         }
     }
+    Ok(())
 }
 
 fn emit_config_section(
     entries: &[(Option<String>, LuaValue)],
     path: &[String],
     lines: &mut Vec<String>,
-) {
-    if path.is_empty() {
-        return;
-    }
+) -> LuaResult<()> {
+    let Some(category) = path.first() else {
+        return Err(mlua::Error::RuntimeError(
+            "hl.config: empty configuration category".to_string(),
+        ));
+    };
     let mut body = Vec::new();
-    emit_section_body(entries, 1, &mut body);
+    emit_section_body(entries, 1, &mut body)?;
     if !body.is_empty() {
-        lines.push(format!("{} {{\n{}\n}}\n", path[0], body.join("\n")));
+        lines.push(format!("{} {{\n{}\n}}\n", category, body.join("\n")));
     }
+    Ok(())
 }
 
 fn emit_section_body(
     entries: &[(Option<String>, LuaValue)],
     depth: usize,
     lines: &mut Vec<String>,
-) {
+) -> LuaResult<()> {
     for (key, value) in entries {
         let Some(key) = key.as_deref() else {
-            continue;
+            return Err(mlua::Error::RuntimeError(
+                "hl.config: nested configuration table keys must be strings unless the value is a supported array or vector".to_string(),
+            ));
         };
         match value {
             LuaValue::Table(children)
@@ -1879,17 +1899,23 @@ fn emit_section_body(
                     && value_to_hyprlang(value).is_none() =>
             {
                 lines.push(format!("{}{} {{", "    ".repeat(depth), key));
-                emit_section_body(children, depth + 1, lines);
+                emit_section_body(children, depth + 1, lines)?;
                 lines.push(format!("{}}}", "    ".repeat(depth)));
             }
             other => {
-                if let Some(value) = config_value_to_hyprlang(other) {
-                    lines.push(format!("{}{} = {value}", "    ".repeat(depth), key));
-                }
+                let value = config_value_to_hyprlang(other).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!(
+                        "hl.config: unsupported value for nested option '{}'",
+                        key
+                    ))
+                })?;
+                lines.push(format!("{}{} = {value}", "    ".repeat(depth), key));
             }
         }
     }
+    Ok(())
 }
+
 
 fn lua_quote(value: &str) -> String {
     format!(
@@ -2988,7 +3014,26 @@ mod tests {
     }
 
     #[test]
-    fn evaluates_config_tables_and_get_config_as_lua_values() {
+    fn rejects_unrepresentable_config_values_instead_of_dropping_them() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some("hl.config({ general = { gaps_in = function() end } })"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unsupported value"), "{error}");
+
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some("hl.config({ gaps_in = 5 })"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("category"), "{error}");
+    }
+
+    #[test]
+    fn preserves_config_tables_and_get_config_as_lua_values() {
         let type_check = expand_lua_config(
             Path::new("/tmp/hyprland.lua"),
             Some(
