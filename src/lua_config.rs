@@ -1166,9 +1166,21 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
 
     // hl.dsp.focus is overloaded: it can focus a direction, monitor, workspace,
     // or window. Resolve the selector before falling back to the legacy dispatcher.
+    if name == "workspace.move" {
+        let selector = args.first()?;
+        let monitor = table_string(selector, "monitor")?;
+        if let Some(workspace) = table_string(selector, "workspace") {
+            return Some(("moveworkspacetomonitor".to_string(), vec![workspace, monitor]));
+        }
+        return Some(("movecurrentworkspacetomonitor".to_string(), vec![monitor]));
+    }
+
     if name == "focus" {
         let selector = args.first()?;
         if let Some(workspace) = table_string(selector, "workspace") {
+            if table_bool(selector, "on_current_monitor") == Some(true) {
+                return None;
+            }
             return Some(("workspace".to_string(), vec![workspace]));
         }
         if let Some(monitor) = table_string(selector, "monitor") {
@@ -1219,7 +1231,6 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "window.resize" => "resizeactive",
         "workspace.toggle_special" => "togglespecialworkspace",
         "workspace.rename" => "renameworkspace",
-        "workspace.move" => "movecurrentworkspacetomonitor",
         "workspace.swap_monitors" => "swapactiveworkspaces",
         "focus" => "movefocus",
         "no_op" => "nothing",
@@ -2567,18 +2578,23 @@ mod tests {
     #[test]
     fn serializes_fullscreen_state_and_workspace_to_monitor_dispatchers() {
         let source = concat!(
-            "bind = SUPER, F, fullscreenstate, 1, 2, toggle\\n",
-            "bind = SUPER, W, moveworkspacetomonitor, 3, HDMI-A-1\\n",
+            "bind = SUPER, F, fullscreenstate, 1, 2, toggle\n",
+            "bind = SUPER, W, moveworkspacetomonitor, 3, HDMI-A-1\n",
         );
         let generated = hyprlang_to_lua(source).unwrap();
         assert!(
-            generated.contains("hl.dsp.window.fullscreen_state({ internal = 1, client = 2, action = \\"toggle\\" })"),
+            generated.contains(r#"hl.dsp.window.fullscreen_state({ internal = 1, client = 2, action = "toggle" })"#),
             "{generated}"
         );
         assert!(
-            generated.contains("hl.dsp.workspace.move({ workspace = \\"3\\", monitor = \\"HDMI-A-1\\" })"),
+            generated.contains(r#"hl.dsp.workspace.move({ workspace = "3", monitor = "HDMI-A-1" })"#),
             "{generated}"
         );
+
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("bind = SUPER,F,fullscreenstate,1,2,toggle"), "{parsed}");
+        assert!(parsed.contains("bind = SUPER,W,moveworkspacetomonitor,3,HDMI-A-1"), "{parsed}");
     }
 
     #[test]
