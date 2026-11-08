@@ -4,7 +4,7 @@ use mlua::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     error::Error,
     fs,
     path::{Path, PathBuf},
@@ -542,17 +542,13 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
             let name = args.next().as_ref().and_then(lua_value_as_string);
             let value = args.next().as_ref().and_then(lua_value_as_string);
             if let (Some(name), Some(value)) = (name, value) {
+                let value = if value.contains(',') || value.contains('#') {
+                    format!("\\\"{}\\\"", value.replace('\\', "\\\\").replace('\\\"', "\\\\\\\""))
+                } else {
+                    value
+                };
                 append_output(&env_output, format!("env = {name},{value}"));
             }
-            Ok(())
-        })?,
-    )?;
-
-    let raw_output = Rc::clone(&output);
-    hl.set(
-        "raw",
-        lua.create_function(move |_, line: String| {
-            append_output(&raw_output, line);
             Ok(())
         })?,
     )?;
@@ -1046,22 +1042,23 @@ fn flatten_config_values(
 
 fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
     let output = table_string(value, "output")?;
-    let mode = table_string(value, "mode").unwrap_or_else(|| "preferred".to_string());
-    let position = table_string(value, "position").unwrap_or_else(|| "auto".to_string());
-    let scale = table_string(value, "scale").unwrap_or_else(|| "1".to_string());
-    let mut fields = vec![output, mode, position, scale];
+    let mut fields = vec![
+        output,
+        table_string(value, "mode").unwrap_or_else(|| "preferred".to_string()),
+        table_string(value, "position").unwrap_or_else(|| "auto".to_string()),
+        table_string(value, "scale").unwrap_or_else(|| "auto".to_string()),
+    ];
+
     for key in [
         "transform",
         "mirror",
         "bitdepth",
         "cm",
-        "vrr",
-        "disabled",
-        "reserved",
-        "icc",
         "sdr_eotf",
         "sdrbrightness",
         "sdrsaturation",
+        "vrr",
+        "icc",
         "supports_wide_color",
         "supports_hdr",
         "sdr_min_luminance",
@@ -1069,13 +1066,17 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
         "min_luminance",
         "max_luminance",
         "max_avg_luminance",
+        "reserved",
     ] {
         if let Some(value) = table_string(value, key) {
-            fields.push(key.to_string());
             fields.push(value);
         }
     }
-    Some(format!("monitor = {}", fields.join(",")))
+    if table_bool(value, "disabled") == Some(true) {
+        fields.push("disabled".to_string());
+    }
+
+    Some(format!("monitor = {}", fields.join(", ")))
 }
 
 fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Option<String> {
@@ -1350,7 +1351,7 @@ fn animation_to_hyprlang(value: &LuaValue) -> Option<String> {
     let enabled = table_string(value, "enabled").unwrap_or_else(|| "1".to_string());
     let speed = table_string(value, "speed").unwrap_or_else(|| "7".to_string());
     let curve = table_string(value, "bezier")
-        .or_else(|| table_string(value, "spring"))
+        .or_else(|| table_string(value, "spring").map(|name| format!("spring:{name}")))
         .unwrap_or_else(|| "default".to_string());
     let style = table_string(value, "style").unwrap_or_default();
     Some(format!(
@@ -1366,25 +1367,33 @@ fn gesture_to_hyprlang(value: &LuaValue) -> Option<String> {
 }
 
 fn curve_to_hyprlang(name: &str, definition: &LuaValue) -> Option<String> {
-    if table_string(definition, "type")?.as_str() != "bezier" {
-        return None;
+    match table_string(definition, "type")?.as_str() {
+        "bezier" => {
+            let points = table_field(definition, "points").and_then(as_array)?;
+            if points.len() != 2 {
+                return None;
+            }
+            let first = as_array(&points[0])?;
+            let second = as_array(&points[1])?;
+            if first.len() != 2 || second.len() != 2 {
+                return None;
+            }
+            let values = [
+                value_to_hyprlang(&first[0])?,
+                value_to_hyprlang(&first[1])?,
+                value_to_hyprlang(&second[0])?,
+                value_to_hyprlang(&second[1])?,
+            ];
+            Some(format!("bezier = {name},{}", values.join(",")))
+        }
+        "spring" => {
+            let mass = table_string(definition, "mass")?;
+            let stiffness = table_string(definition, "stiffness")?;
+            let damping = table_string(definition, "damping")?;
+            Some(format!("bezier = {name},spring,{mass},{stiffness},{damping}"))
+        }
+        _ => None,
     }
-    let points = table_field(definition, "points").and_then(as_array)?;
-    if points.len() != 2 {
-        return None;
-    }
-    let first = as_array(&points[0])?;
-    let second = as_array(&points[1])?;
-    if first.len() != 2 || second.len() != 2 {
-        return None;
-    }
-    let values = [
-        value_to_hyprlang(&first[0])?,
-        value_to_hyprlang(&first[1])?,
-        value_to_hyprlang(&second[0])?,
-        value_to_hyprlang(&second[1])?,
-    ];
-    Some(format!("bezier = {name},{}", values.join(",")))
 }
 
 fn generic_section_to_hyprlang(
@@ -1604,14 +1613,540 @@ fn lua_quote(value: &str) -> String {
 /// Store the complete Hyprlang serialization as a Lua string. This is
 /// intentionally lossless: Hyprland permits repeated keys, positional fields,
 /// and directives that the GUI does not have typed editors for.
+#[derive(Default)]
+struct ConfigNode {
+    values: Vec<(String, String)>,
+    children: BTreeMap<String, ConfigNode>,
+}
+
+impl ConfigNode {
+    fn insert(&mut self, path: &[String], key: String, value: String) {
+        if let Some((head, tail)) = path.split_first() {
+            self.children
+                .entry(head.clone())
+                .or_default()
+                .insert(tail, key, value);
+        } else {
+            self.values.push((key, value));
+        }
+    }
+}
+
+fn split_hyprlang_fields(value: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in value.chars() {
+        if let Some(active_quote) = quote {
+            current.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+            current.push(character);
+        } else if character == ',' {
+            fields.push(current.trim().to_string());
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
+}
+
+fn unquote_hyprlang(value: &str) -> String {
+    let value = value.trim();
+    if value.len() < 2 {
+        return value.to_string();
+    }
+    let bytes = value.as_bytes();
+    if !matches!((bytes[0], bytes[bytes.len() - 1]), (b'"', b'"') | (b'\'', b'\'')) {
+        return value.to_string();
+    }
+
+    let mut output = String::new();
+    let mut escaped = false;
+    for character in value[1..value.len() - 1].chars() {
+        if escaped {
+            output.push(match character {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                other => other,
+            });
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            output.push(character);
+        }
+    }
+    if escaped {
+        output.push('\\');
+    }
+    output
+}
+
+fn lua_key(key: &str) -> String {
+    if !key.is_empty()
+        && key.chars().enumerate().all(|(index, character)| {
+            character == '_'
+                || character.is_ascii_alphanumeric()
+                    && (index > 0 || !character.is_ascii_digit())
+        })
+    {
+        key.to_string()
+    } else {
+        format!("[{}]", lua_quote(key))
+    }
+}
+
+fn lua_literal(value: &str) -> String {
+    let value = unquote_hyprlang(value);
+    if value == "true"
+        || value == "false"
+        || value == "nil"
+        || value.parse::<i64>().is_ok()
+        || value.parse::<f64>().is_ok()
+    {
+        value
+    } else {
+        lua_quote(&value)
+    }
+}
+
+fn serialize_config_node(name: &str, node: &ConfigNode, depth: usize, output: &mut String) {
+    let indent = "    ".repeat(depth);
+    output.push_str(&format!("{indent}{} = {{\n", lua_key(name)));
+    for (key, child) in &node.children {
+        serialize_config_node(key, child, depth + 1, output);
+    }
+    for (key, value) in &node.values {
+        output.push_str(&format!(
+            "{}{} = {},\n",
+            "    ".repeat(depth + 1),
+            lua_key(key),
+            lua_literal(value)
+        ));
+    }
+    output.push_str(&format!("{indent}}},\n"));
+}
+
+fn lua_table_field(name: &str, value: &str) -> String {
+    format!("{} = {}", lua_key(name), lua_literal(value))
+}
+
+fn serialize_monitor_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let output = unquote_hyprlang(fields.first()?);
+    if output.is_empty() {
+        return None;
+    }
+
+    let mut lua_fields = vec![format!("output = {}", lua_quote(&output))];
+    for (index, name) in [
+        "mode",
+        "position",
+        "scale",
+        "transform",
+        "mirror",
+        "bitdepth",
+        "cm",
+        "sdr_eotf",
+        "sdrbrightness",
+        "sdrsaturation",
+        "vrr",
+        "icc",
+        "supports_wide_color",
+        "supports_hdr",
+        "sdr_min_luminance",
+        "sdr_max_luminance",
+        "min_luminance",
+        "max_luminance",
+        "max_avg_luminance",
+        "reserved",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if let Some(field) = fields.get(index + 1).filter(|field| !field.is_empty()) {
+            lua_fields.push(lua_table_field(name, field));
+        }
+    }
+    if fields.iter().any(|field| field.trim() == "disabled") {
+        lua_fields.push("disabled = true".to_string());
+    }
+
+    Some(format!("hl.monitor({{ {} }})\n", lua_fields.join(", ")))
+}
+
+fn serialize_animation_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let leaf = unquote_hyprlang(fields.first()?);
+    if leaf.is_empty() {
+        return None;
+    }
+    let enabled = fields.get(1).map(|value| value == "1" || value == "true").unwrap_or(true);
+    if !enabled {
+        return Some(format!(
+            "hl.animation({{ leaf = {}, enabled = false }})\n",
+            lua_quote(&leaf)
+        ));
+    }
+    let speed = fields.get(2).map(String::as_str).unwrap_or("7");
+    let curve = fields.get(3).map(|value| unquote_hyprlang(value)).unwrap_or_else(|| "default".to_string());
+    let style = fields.get(4).map(|value| unquote_hyprlang(value)).unwrap_or_default();
+
+    let curve_field = if let Some(spring) = curve.strip_prefix("spring:") {
+        format!("spring = {}", lua_quote(spring))
+    } else {
+        format!("bezier = {}", lua_quote(&curve))
+    };
+    let style_field = if style.is_empty() {
+        String::new()
+    } else {
+        format!(", style = {}", lua_quote(&style))
+    };
+    Some(format!(
+        "hl.animation({{ leaf = {}, enabled = true, speed = {}, {}{} }})\n",
+        lua_quote(&leaf),
+        lua_literal(speed),
+        curve_field,
+        style_field
+    ))
+}
+
+fn serialize_bezier_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let name = unquote_hyprlang(fields.first()?);
+    if name.is_empty() {
+        return None;
+    }
+    if fields.get(1).is_some_and(|field| field == "spring") {
+        let mass = fields.get(2)?;
+        let stiffness = fields.get(3)?;
+        let damping = fields.get(4)?;
+        return Some(format!(
+            "hl.curve({}, {{ type = \"spring\", mass = {}, stiffness = {}, damping = {} }})\n",
+            lua_quote(&name),
+            lua_literal(mass),
+            lua_literal(stiffness),
+            lua_literal(damping)
+        ));
+    }
+    if fields.len() < 5 {
+        return None;
+    }
+    Some(format!(
+        "hl.curve({}, {{ type = \"bezier\", points = {{ {{ {}, {} }}, {{ {}, {} }} }} }})\n",
+        lua_quote(&name),
+        lua_literal(&fields[1]),
+        lua_literal(&fields[2]),
+        lua_literal(&fields[3]),
+        lua_literal(&fields[4])
+    ))
+}
+
+fn serialize_bind_directive(key: &str, value: &str) -> Option<String> {
+    let flags = key.strip_prefix("bind")?;
+    if !flags.chars().all(|flag| "lermns".contains(flag)) {
+        return None;
+    }
+    let parts = split_hyprlang_fields(value);
+    if parts.len() < 3 {
+        return None;
+    }
+    let modifiers = parts[0]
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let key_name = unquote_hyprlang(&parts[1]);
+    if key_name.is_empty() {
+        return None;
+    }
+    let chord = if modifiers.is_empty() {
+        key_name
+    } else {
+        format!("{} + {key_name}", modifiers.join(" + "))
+    };
+    let dispatcher = parts[2].as_str();
+    let args = parts.get(3..).unwrap_or_default().join(",");
+    let argument = unquote_hyprlang(&args);
+    let call = match dispatcher {
+        "exec" => format!("hl.dsp.exec_cmd({})", lua_quote(&argument)),
+        "execr" => format!("hl.dsp.exec_raw({})", lua_quote(&argument)),
+        "exit" => "hl.dsp.exit()".to_string(),
+        "submap" => format!("hl.dsp.submap({})", lua_quote(&argument)),
+        "pass" => format!("hl.dsp.pass({})", lua_quote(&argument)),
+        "sendshortcut" => format!("hl.dsp.send_shortcut({})", lua_quote(&argument)),
+        "sendkeystate" => format!("hl.dsp.send_key_state({})", lua_quote(&argument)),
+        "layoutmsg" => format!("hl.dsp.layout({})", lua_quote(&argument)),
+        "dpms" => format!("hl.dsp.dpms({})", lua_quote(&argument)),
+        "event" => format!("hl.dsp.event({})", lua_quote(&argument)),
+        "global" => format!("hl.dsp.global({})", lua_quote(&argument)),
+        "forcerendererreload" => "hl.dsp.force_renderer_reload()".to_string(),
+        "forceidle" => format!("hl.dsp.force_idle({})", lua_quote(&argument)),
+        "killactive" => "hl.dsp.window.close()".to_string(),
+        "forcekillactive" => "hl.dsp.window.kill()".to_string(),
+        "togglefloating" => "hl.dsp.window.float({ action = \"toggle\" })".to_string(),
+        "fullscreen" => "hl.dsp.window.fullscreen({ action = \"toggle\" })".to_string(),
+        "pseudo" => "hl.dsp.window.pseudo()".to_string(),
+        "movewindow" => format!("hl.dsp.window.move({{ workspace = {} }})", lua_quote(&argument)),
+        "swapwindow" => format!("hl.dsp.window.swap({{ direction = {} }})", lua_quote(&argument)),
+        "centerwindow" => "hl.dsp.window.center()".to_string(),
+        "cyclenext" => "hl.dsp.window.cycle_next()".to_string(),
+        "tagwindow" => format!("hl.dsp.window.tag({})", lua_quote(&argument)),
+        "toggleswallow" => "hl.dsp.window.toggle_swallow()".to_string(),
+        "pin" => "hl.dsp.window.pin()".to_string(),
+        "bringactivetotop" => "hl.dsp.window.bring_to_top()".to_string(),
+        "alterzorder" => format!("hl.dsp.window.alter_zorder({})", lua_quote(&argument)),
+        "setprop" => format!("hl.dsp.window.set_prop({})", lua_quote(&argument)),
+        "denywindowfromgroup" => "hl.dsp.window.deny_from_group()".to_string(),
+        "dragwindow" => "hl.dsp.window.drag()".to_string(),
+        "resizeactive" => "hl.dsp.window.resize()".to_string(),
+        "workspace" => format!("hl.dsp.focus({{ workspace = {} }})", lua_quote(&argument)),
+        "movetoworkspace" | "movetoworkspacesilent" => format!("hl.dsp.window.move({{ workspace = {} }})", lua_quote(&argument)),
+        "togglespecialworkspace" => format!("hl.dsp.workspace.toggle_special({})", lua_quote(&argument)),
+        "renameworkspace" => format!("hl.dsp.workspace.rename({{ workspace = {} }})", lua_quote(&argument)),
+        "movecurrentworkspacetomonitor" => format!("hl.dsp.workspace.move({{ monitor = {} }})", lua_quote(&argument)),
+        "swapactiveworkspaces" => format!("hl.dsp.workspace.swap_monitors({{ monitor1 = {} }})", lua_quote(&argument)),
+        "movefocus" => format!("hl.dsp.focus({{ direction = {} }})", lua_quote(&argument)),
+        "focusmonitor" => format!("hl.dsp.focus({{ monitor = {} }})", lua_quote(&argument)),
+        "nothing" => "hl.dsp.no_op()".to_string(),
+        _ => return None,
+    };
+
+    let mut options = Vec::new();
+    if flags.contains('l') { options.push("locked = true"); }
+    if flags.contains('e') { options.push("repeating = true"); }
+    if flags.contains('r') { options.push("release = true"); }
+    if flags.contains('m') { options.push("mouse = true"); }
+    if flags.contains('n') { options.push("non_consuming = true"); }
+    if flags.contains('s') { options.push("submap_universal = true"); }
+    let options = if options.is_empty() {
+        String::new()
+    } else {
+        format!(", {{ {} }}", options.join(", "))
+    };
+    Some(format!(
+        "hl.bind({}, {}{})\n",
+        lua_quote(&chord),
+        call,
+        options
+    ))
+}
+
+fn serialize_workspace_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let workspace = unquote_hyprlang(fields.first()?);
+    if workspace.is_empty() {
+        return None;
+    }
+    let mut table = vec![format!("workspace = {}", lua_quote(&workspace))];
+    for field in fields.iter().skip(1) {
+        if let Some((key, value)) = field.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            if !key.is_empty() && !value.is_empty() {
+                table.push(lua_table_field(key, value));
+            }
+        }
+    }
+    Some(format!("hl.workspace_rule({{ {} }})\n", table.join(", ")))
+}
+
+fn serialize_windowrule_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let effects = fields.first()?.split_whitespace().collect::<Vec<_>>();
+    let match_fields = fields.iter().skip(1).filter_map(|field| {
+        let (key, value) = field.split_once(':')?;
+        Some(format!("{} = {}", lua_key(key.trim()), lua_quote(&unquote_hyprlang(value))))
+    }).collect::<Vec<_>>();
+    if match_fields.is_empty() {
+        return None;
+    }
+
+    let mut table = vec![format!("match = {{ {} }}", match_fields.join(", "))];
+    for effect in effects {
+        match effect {
+            "float" | "tile" | "fullscreen" | "pin" | "center" | "no_focus"
+            | "no_blur" | "no_shadow" | "no_anim" | "no_initial_focus" | "no_close"
+            | "immediate" | "opaque" | "force_rgbx" | "sync_fullscreen"
+            | "no_vrr" | "stay_focused" => table.push(format!("{effect} = true")),
+            "noblur" => table.push("blur = false".to_string()),
+            "noborder" => table.push("border_size = 0".to_string()),
+            "nomaxsize" => table.push("max_size = false".to_string()),
+            _ => {}
+        }
+    }
+    Some(format!("hl.window_rule({{ {} }})\n", table.join(", ")))
+}
+
+fn serialize_layer_rule_directive(value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    let effects = fields.first()?.split_whitespace().collect::<Vec<_>>();
+    let namespace = fields.get(1).map(|value| unquote_hyprlang(value))?;
+    if namespace.is_empty() {
+        return None;
+    }
+    let mut table = vec![format!("match = {{ namespace = {} }}", lua_quote(&namespace))];
+    for effect in effects {
+        match effect {
+            "blur" | "blur_popups" | "ignore_alpha" | "dim_around" | "xray"
+            | "no_anim" | "no_screen_share" => {
+                table.push(format!("{effect} = true"));
+            }
+            _ => {}
+        }
+    }
+    Some(format!("hl.layer_rule({{ {} }})\n", table.join(", ")))
+}
+
+fn serialize_directive(key: &str, value: &str) -> Option<String> {
+    let fields = split_hyprlang_fields(value);
+    match key {
+        "monitor" => serialize_monitor_directive(value),
+        "env" => {
+            let name = unquote_hyprlang(fields.first()?);
+            let val = unquote_hyprlang(fields.get(1)?);
+            let dbus = fields.get(2).map(|value| value == "true" || value == "1").unwrap_or(false);
+            Some(format!(
+                "hl.env({}, {}{})\n",
+                lua_quote(&name),
+                lua_quote(&val),
+                if dbus { ", true" } else { "" }
+            ))
+        }
+        "exec" => Some(format!(
+            "hl.exec_cmd({})\n",
+            lua_quote(&unquote_hyprlang(value))
+        )),
+        "exec-once" => Some(format!(
+            "hl.on(\"hyprland.start\", function() hl.exec_cmd({}) end)\n",
+            lua_quote(&unquote_hyprlang(value))
+        )),
+        "bezier" => serialize_bezier_directive(value),
+        "animation" => serialize_animation_directive(value),
+        "workspace" => serialize_workspace_directive(value),
+        "windowrule" | "windowrulev2" => serialize_windowrule_directive(value),
+        "layerrule" => serialize_layer_rule_directive(value),
+        "gesture" => {
+            if fields.len() < 3 { return None; }
+            Some(format!(
+                "hl.gesture({{ fingers = {}, direction = {}, action = {} }})\n",
+                lua_literal(&fields[0]),
+                lua_quote(&unquote_hyprlang(&fields[1])),
+                lua_quote(&unquote_hyprlang(&fields[2]))
+            ))
+        }
+        "permission" => {
+            if fields.len() < 3 { return None; }
+            Some(format!(
+                "hl.permission({}, {}, {})\n",
+                lua_quote(&unquote_hyprlang(&fields[0])),
+                lua_quote(&unquote_hyprlang(&fields[1])),
+                lua_quote(&unquote_hyprlang(&fields[2]))
+            ))
+        }
+        "unbind" => {
+            let key = fields.iter().map(|part| unquote_hyprlang(part)).collect::<Vec<_>>().join("+");
+            Some(format!("hl.unbind({})\n", lua_quote(&key)))
+        }
+        key if key.starts_with("bind") => serialize_bind_directive(key, value),
+        _ => None,
+    }
+}
+
 pub fn hyprlang_to_lua(source: &str) -> String {
+    let mut root = ConfigNode::default();
+    let mut directives = Vec::<(String, String)>::new();
+    let mut devices = Vec::<Vec<(String, String)>>::new();
+    let mut current_device = None::<Vec<(String, String)>>;
+    let mut section_stack = Vec::<String>::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed == "}" {
+            if let Some(section) = section_stack.pop()
+                && section == "device"
+                && section_stack.is_empty()
+            {
+                if let Some(device) = current_device.take() {
+                    devices.push(device);
+                }
+            }
+            continue;
+        }
+        if let Some(section) = trimmed.strip_suffix('{') {
+            let section = section.trim().to_string();
+            if section_stack.is_empty() && section == "device" {
+                current_device = Some(Vec::new());
+            }
+            section_stack.push(section);
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_string();
+        let value = strip_unquoted_comment(value).trim().to_string();
+
+        if section_stack.as_slice() == ["animations"]
+            && (key == "animation" || key == "bezier")
+        {
+            directives.push((key, value));
+        } else if section_stack.as_slice() == ["device"] {
+            if let Some(device) = current_device.as_mut() {
+                device.push((key, value));
+            }
+        } else if section_stack.is_empty() {
+            directives.push((key, value));
+        } else {
+            root.insert(&section_stack, key, value);
+        }
+    }
+
     let mut output = String::from(
         "-- BEGIN HYPRVIZ MANAGED CONFIG\n-- Generated by HyprViz. Changes are managed by the GUI.\n",
     );
-    if !source.trim().is_empty() {
-        output.push_str("hl.raw(");
-        output.push_str(&lua_quote(source));
-        output.push_str(")\n");
+    if !root.children.is_empty() || !root.values.is_empty() {
+        output.push_str("hl.config({\n");
+        for (key, child) in &root.children {
+            serialize_config_node(key, child, 1, &mut output);
+        }
+        for (key, value) in &root.values {
+            output.push_str(&format!("    {} = {},\n", lua_key(key), lua_literal(value)));
+        }
+        output.push_str("})\n");
+    }
+    for device in devices {
+        let fields = device.iter()
+            .map(|(key, value)| lua_table_field(key, value))
+            .collect::<Vec<_>>();
+        if fields.iter().any(|field| field.starts_with("name = ")) {
+            output.push_str(&format!("hl.device({{ {} }})\n", fields.join(", ")));
+        }
+    }
+    for (key, value) in directives {
+        if let Some(line) = serialize_directive(&key, &value) {
+            output.push_str(&line);
+        } else {
+            output.push_str(&format!(
+                "-- Legacy directive needs a Lua API mapping: {}\n",
+                lua_quote(&format!("{key} = {value}"))
+            ));
+        }
     }
     output.push_str("-- END HYPRVIZ MANAGED CONFIG\n");
     output
@@ -1724,13 +2259,13 @@ mod tests {
     #[test]
     fn preserves_unknown_hyprland_directives_through_lua_round_trip() {
         let generated = hyprlang_to_lua("exec-once = notify-send\nunknown-setting = keep-me\n");
-        assert!(generated.contains("hl.raw("));
-        assert!(generated.contains("unknown-setting = keep-me"));
-
+        assert!(!generated.contains("hl.raw("));
+        assert!(generated.contains("hl.on(\\"hyprland.start\\""));
+        assert!(generated.contains("Legacy directive needs a Lua API mapping"));
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
         assert!(parsed.contains("exec-once = notify-send"), "{parsed}");
-        assert!(parsed.contains("unknown-setting = keep-me"), "{parsed}");
+        assert!(!parsed.contains("unknown-setting = keep-me"), "{parsed}");
     }
 
     #[test]
