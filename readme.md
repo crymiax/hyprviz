@@ -51,7 +51,7 @@ require("./hyprviz")
 
 ```
 
-HyprViz stores GUI-managed values in `hyprviz.lua` and additional profiles in `hyprviz/<profile>.lua`. The main `hyprland.lua` file and Lua code outside the managed block are kept intact when the GUI saves changes. Use `require()` for modules; `dofile()` and `loadfile()` resolve relative paths from the file currently being evaluated. GUI saves convert supported legacy directives to native Hyprland Lua calls such as `hl.config()`, `hl.monitor()`, `hl.bind()`, `hl.animation()`, and rule APIs. Directives without a native serializer are left as explicit migration comments rather than emitted as invalid `hl.raw()` calls.
+HyprViz stores GUI-managed values in `hyprviz.lua` and additional profiles in `hyprviz/<profile>.lua`. The main `hyprland.lua` file and Lua code outside the managed block are kept intact when the GUI saves changes. Use `require()` for modules; `dofile()` and `loadfile()` resolve relative paths from the file currently being evaluated. GUI saves convert supported legacy directives to native Hyprland Lua calls such as `hl.config()`, `hl.monitor()`, `hl.bind()`, `hl.animation()`, plugin, and rule APIs. A save is refused when a legacy directive or device field has no safe native mapping, so unsupported settings are not silently discarded.
 
 The editor is a configuration evaluator, not a running compositor. Live window, workspace and monitor queries return empty or `nil` values. Dispatcher calls, plugins, timers and ordinary event callbacks are not run. The `hyprland.start` callback is evaluated only to collect startup `hl.exec_cmd()` entries; these become `exec-once` directives and are never launched by the editor.
 
