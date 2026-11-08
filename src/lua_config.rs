@@ -116,8 +116,12 @@ pub fn profile_name_from_lua(source: &str) -> Option<String> {
             .strip_prefix("./hyprviz/")
             .or_else(|| module.strip_prefix("hyprviz/"))
         {
-            let name = name.trim_end_matches(".lua");
-            if !name.is_empty() && !name.contains('/') {
+            let name = name.strip_suffix(".lua").unwrap_or(name);
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            {
                 profile = Some(name.to_string());
             }
         }
@@ -771,9 +775,13 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         "device",
         lua.create_function(move |lua, table: Table| {
             let value = lua_table_to_value(table, 0)?;
-            if let Some(line) = generic_section_to_hyprlang("device", &value, "name") {
-                append_output(&device_output, line);
-            }
+            let line = generic_section_to_hyprlang("device", &value, "name")
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError(
+                        "hl.device: invalid or unsupported device specification".to_string(),
+                    )
+                })?;
+            append_output(&device_output, line);
             create_handle(lua)
         })?,
     )?;
@@ -784,35 +792,43 @@ fn register_hyprland_api(lua: &Lua, output: Rc<RefCell<Vec<String>>>) -> LuaResu
         lua.create_function(move |_, args: MultiValue| {
             let mut args = args.into_iter();
             let first = args.next();
-            let line = match first {
+            let (binary, kind, mode) = match first {
                 Some(Value::Table(table)) => {
                     let value = lua_table_to_value(table, 0)?;
-                    let binary = table_string(&value, "binary");
-                    let kind = table_string(&value, "type");
-                    let mode = table_string(&value, "mode");
-                    match (binary, kind, mode) {
-                        (Some(binary), Some(kind), Some(mode)) => {
-                            Some(format!("permission = {binary},{kind},{mode}"))
-                        }
-                        _ => None,
+                    if !table_has_only_keys(&value, &["binary", "type", "mode"]) {
+                        return Err(mlua::Error::RuntimeError(
+                            "hl.permission: unknown field in permission specification".to_string(),
+                        ));
                     }
+                    (
+                        table_string(&value, "binary"),
+                        table_string(&value, "type"),
+                        table_string(&value, "mode"),
+                    )
                 }
-                Some(binary) => {
-                    let binary = lua_value_as_string(&binary);
-                    let kind = args.next().as_ref().and_then(lua_value_as_string);
-                    let mode = args.next().as_ref().and_then(lua_value_as_string);
-                    match (binary, kind, mode) {
-                        (Some(binary), Some(kind), Some(mode)) => {
-                            Some(format!("permission = {binary},{kind},{mode}"))
-                        }
-                        _ => None,
-                    }
-                }
-                None => None,
+                Some(binary) => (
+                    lua_value_as_string(&binary),
+                    args.next().as_ref().and_then(lua_value_as_string),
+                    args.next().as_ref().and_then(lua_value_as_string),
+                ),
+                None => (None, None, None),
             };
-            if let Some(line) = line {
-                append_output(&permission_output, line);
-            }
+            let (binary, kind, mode) = match (binary, kind, mode) {
+                (Some(binary), Some(kind), Some(mode))
+                    if !binary.is_empty() && !kind.is_empty() && !mode.is_empty() =>
+                {
+                    (binary, kind, mode)
+                }
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "hl.permission: expected binary, type, and mode".to_string(),
+                    ));
+                }
+            };
+            append_output(
+                &permission_output,
+                format!("permission = {binary},{kind},{mode}"),
+            );
             Ok(())
         })?,
     )?;
@@ -1174,6 +1190,12 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
         return None;
     }
 
+    if table_field(value, "reserved").is_some()
+        && table_field(value, "reserved_area").is_some()
+    {
+        return None;
+    }
+
     let output = table_string(value, "output")?;
     let mut fields = vec![
         output,
@@ -1182,7 +1204,9 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
         table_string(value, "scale").unwrap_or_else(|| "auto".to_string()),
     ];
 
-    for key in [
+    // Monitor rules are positional in legacy Hyprland syntax. Keep placeholders
+    // for omitted fields so a later value is never parsed as a different option.
+    let optional_fields = [
         "transform",
         "mirror",
         "bitdepth",
@@ -1199,16 +1223,29 @@ fn monitor_to_hyprlang(value: &LuaValue) -> Option<String> {
         "min_luminance",
         "max_luminance",
         "max_avg_luminance",
-    ] {
-        if let Some(value) = table_string(value, key) {
-            fields.push(value);
-        }
+        "reserved",
+    ];
+    let mut optional_values = Vec::with_capacity(optional_fields.len());
+    for key in optional_fields {
+        let field_key = if key == "reserved" && table_field(value, "reserved").is_none() {
+            "reserved_area"
+        } else {
+            key
+        };
+        let field = match table_field(value, field_key) {
+            Some(value) => Some(value_to_hyprlang(value)?),
+            None => None,
+        };
+        optional_values.push(field);
     }
-    if let Some(reserved) = table_field(value, "reserved")
-        .or_else(|| table_field(value, "reserved_area"))
-        .and_then(value_to_hyprlang)
-    {
-        fields.push(reserved);
+
+    if let Some(last_value) = optional_values.iter().rposition(Option::is_some) {
+        fields.extend(
+            optional_values
+                .into_iter()
+                .take(last_value + 1)
+                .map(Option::unwrap_or_default),
+        );
     }
     if table_bool(value, "disabled") == Some(true) {
         fields.push("disabled".to_string());
@@ -2722,6 +2759,60 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.matches("animation =").count(), 2, "{parsed}");
+    }
+
+    #[test]
+    fn preserves_sparse_monitor_fields_without_shifting_values() {
+        let parsed = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(
+                r#"hl.monitor({ output = "DP-1", transform = 1, bitdepth = 10, vrr = 1 })"#,
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(
+            parsed.contains("monitor = DP-1, preferred, auto, auto, 1, , 10, , , , , , , 1"),
+            "{parsed}"
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_monitor_reserved_aliases() {
+        let error = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.monitor({ output = "DP-1", reserved = 5, reserved_area = 6 })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid monitor specification"), "{error}");
+    }
+
+    #[test]
+    fn rejects_unsafe_profile_names() {
+        for module in ["../outside", "..", "bad.name", "bad\\name"] {
+            let source = format!("require('./hyprviz/{module}')");
+            assert_eq!(profile_name_from_lua(&source), None, "{module}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_device_and_permission_values() {
+        let device = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.device({ name = "touchpad", unsupported = true })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(device.to_string().contains("hl.device"), "{device}");
+
+        let permission = expand_lua_config(
+            Path::new("/tmp/hyprland.lua"),
+            Some(r#"hl.permission({ binary = "app", type = "invalid", mode = "allow", typo = true })"#),
+            false,
+        )
+        .unwrap_err();
+        assert!(permission.to_string().contains("hl.permission"), "{permission}");
     }
 
     #[test]
