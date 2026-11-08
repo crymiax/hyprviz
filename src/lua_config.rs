@@ -1586,8 +1586,8 @@ fn config_value_to_hyprlang(value: &LuaValue) -> Option<String> {
                 || value.contains('\\')
                 || value.contains('\n')
                 || value.contains('\r')
-                || value.starts_with(char::is_whitespace)
-                || value.ends_with(char::is_whitespace);
+                || value.chars().next().is_some_and(char::is_whitespace)
+                || value.chars().next_back().is_some_and(char::is_whitespace);
             Some(if ambiguous {
                 format!("\"{}\"", value
                     .replace('\\', "\\\\")
@@ -2465,19 +2465,17 @@ mod tests {
 
     #[test]
     fn preserves_lua_scalar_types_and_string_config_literals() {
-        assert_eq!(
-            lua_value_to_ml_value(
-                &Lua::new(),
-                &LuaValue::Scalar(LuaScalar::String("123".to_string())),
-                0,
-            )
-            .unwrap()
-            .type_name(),
-            "string"
-        );
+        let lua = Lua::new();
+        let restored = lua_value_to_ml_value(
+            &lua,
+            &LuaValue::Scalar(LuaScalar::String("123".to_string())),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(restored, Value::String(_)));
         assert_eq!(
             config_value_to_hyprlang(&LuaValue::Scalar(LuaScalar::String("true".to_string()))),
-            Some("\\\"true\\\"".to_string())
+            Some("\"true\"".to_string())
         );
         assert_eq!(
             config_value_to_hyprlang(&LuaValue::Scalar(LuaScalar::Boolean(true))),
