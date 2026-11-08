@@ -1182,6 +1182,7 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "window.cycle_next" => "cyclenext",
         "window.tag" => "tagwindow",
         "window.clear_tags" => "tagwindow",
+        "focuswindow" => "focuswindow",
         "window.toggle_swallow" => "toggleswallow",
         "window.pin" => "pin",
         "window.bring_to_top" => "bringactivetotop",
@@ -1938,6 +1939,7 @@ fn serialize_bind_directive(key: &str, value: &str) -> Option<String> {
         "movecurrentworkspacetomonitor" => format!("hl.dsp.workspace.move({{ monitor = {} }})", lua_quote(&argument)),
         "swapactiveworkspaces" => format!("hl.dsp.workspace.swap_monitors({{ monitor1 = {} }})", lua_quote(&argument)),
         "movefocus" => format!("hl.dsp.focus({{ direction = {} }})", lua_quote(&argument)),
+        "focuswindow" => format!("hl.dsp.focus({{ window = {} }})", lua_quote(&argument)),
         "focusmonitor" => format!("hl.dsp.focus({{ monitor = {} }})", lua_quote(&argument)),
         "nothing" => "hl.dsp.no_op()".to_string(),
         _ => return None,
@@ -2233,7 +2235,6 @@ mod tests {
     fn preserves_all_positional_monitor_fields() {
         let source = concat!(
             "monitor = eDP-1, preferred, auto, 1, 1, HDMI-A-1, 10, srgb\n",
-        );
         let generated = hyprlang_to_lua(source);
         let parsed =
             expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
