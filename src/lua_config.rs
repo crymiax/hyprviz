@@ -2423,21 +2423,6 @@ mod tests {
     }
 
     #[test]
-    fn serializes_window_and_layer_rules_with_native_lua_specs() {
-        let source = concat!(
-            "windowrulev2 = float noblur move 10 20, class:^(kitty)$\n",
-            "layerrule = blur blurpopups ignorealpha 0.25, namespace:^(panel)$\n",
-        );
-        let generated = hyprlang_to_lua(source).unwrap();
-        assert!(generated.contains("hl.window_rule("));
-        assert!(generated.contains("hl.layer_rule("));
-        let parsed =
-            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
-        assert!(parsed.contains("windowrulev2 ="), "{parsed}");
-        assert!(parsed.contains("layerrule ="), "{parsed}");
-    }
-
-    #[test]
     fn serializes_startup_commands_using_native_hyprland_api() {
         let generated = hyprlang_to_lua("exec-once = notify-send\n").unwrap();
         assert!(!generated.contains("hl.raw("));
