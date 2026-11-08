@@ -1219,7 +1219,9 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
 
     if name == "window.fullscreen_state" {
         let selector = args.first()?;
-        if table_bool(selector, "layout_aware") == Some(false) {
+        if table_field(selector, "layout_aware").is_some()
+            && table_bool(selector, "layout_aware") != Some(true)
+        {
             return None;
         }
         let internal = table_string(selector, "internal")?;
@@ -1234,7 +1236,7 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
     if name == "focus" {
         let selector = args.first()?;
         if let Some(workspace) = table_string(selector, "workspace") {
-            if table_bool(selector, "on_current_monitor") == Some(true) {
+            if table_field(selector, "on_current_monitor").is_some() {
                 return None;
             }
             return Some(("workspace".to_string(), vec![workspace]));
@@ -1388,7 +1390,7 @@ fn window_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
         let Some(key) = key.as_deref() else {
             return None;
         };
-        if key == "name" || key == "enabled" {
+        if key == "name" {
             continue;
         }
         if key == "match" {
@@ -1450,7 +1452,7 @@ fn layer_rule_to_hyprlang(value: &LuaValue) -> Option<String> {
             namespace = table_string(field_value, "namespace");
             continue;
         }
-        if key == "name" || key == "enabled" {
+        if key == "name" {
             continue;
         }
         if !EFFECTS.contains(&key) {
