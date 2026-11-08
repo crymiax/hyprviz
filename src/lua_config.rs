@@ -1136,6 +1136,25 @@ fn bind_to_hyprlang(key: &str, dispatcher: Value, options: Option<Value>) -> Opt
 
 fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String, Vec<String>)> {
     let name = name.strip_prefix("hl.dsp.").unwrap_or(name);
+
+    // hl.dsp.focus is overloaded: it can focus a direction, monitor, workspace,
+    // or window. Resolve the selector before falling back to the legacy dispatcher.
+    if name == "focus" {
+        let selector = args.first()?;
+        if let Some(workspace) = table_string(selector, "workspace") {
+            return Some(("workspace".to_string(), vec![workspace]));
+        }
+        if let Some(monitor) = table_string(selector, "monitor") {
+            return Some(("focusmonitor".to_string(), vec![monitor]));
+        }
+        if let Some(direction) = table_string(selector, "direction") {
+            return Some(("movefocus".to_string(), vec![direction]));
+        }
+        if let Some(window) = table_string(selector, "window") {
+            return Some(("focuswindow".to_string(), vec![window]));
+        }
+    }
+
     let dispatcher = match name {
         "exec_cmd" => "exec",
         "exec_raw" => "execr",
@@ -1171,7 +1190,6 @@ fn dispatcher_to_hyprland_args(name: &str, args: &[LuaValue]) -> Option<(String,
         "window.deny_from_group" => "denywindowfromgroup",
         "window.drag" => "dragwindow",
         "window.resize" => "resizeactive",
-        "workspace.set" => "workspace",
         "workspace.toggle_special" => "togglespecialworkspace",
         "workspace.rename" => "renameworkspace",
         "workspace.move" => "movecurrentworkspacetomonitor",
