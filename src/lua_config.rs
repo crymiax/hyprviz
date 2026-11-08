@@ -1984,7 +1984,7 @@ fn serialize_workspace_directive(value: &str) -> Option<String> {
     Some(format!("hl.workspace_rule({{ {} }})\n", table.join(", ")))
 }
 
-fn window_effect_key(token: &str) -> Option<(&'static str, bool)> {
+fn window_effect_key(token: &str) -> Option<(&str, bool)> {
     Some(match token {
         "float" | "tile" | "fullscreen" | "maximize" | "center" | "pseudo"
         | "no_initial_focus" | "pin" | "persistent_size" | "allows_input"
@@ -2138,6 +2138,10 @@ fn serialize_directive(key: &str, value: &str) -> Option<String> {
         )),
         "exec-once" => Some(format!(
             "hl.on(\"hyprland.start\", function() hl.exec_cmd({}) end)\n",
+            lua_quote(&unquote_hyprlang(value))
+        )),
+        "plugin" => Some(format!(
+            "hl.plugin.load({})\n",
             lua_quote(&unquote_hyprlang(value))
         )),
         "bezier" => serialize_bezier_directive(value),
@@ -2401,6 +2405,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("unknown-setting"), "{error}");
+    }
+
+    #[test]
+    fn serializes_window_and_layer_rules_with_native_lua_specs() {
+        let source = concat!(
+            "windowrulev2 = float noblur move 10 20, class:^(kitty)$\n",
+            "layerrule = blur blurpopups ignorealpha 0.25, namespace:^(panel)$\n",
+        );
+        let generated = hyprlang_to_lua(source).unwrap();
+        assert!(generated.contains("hl.window_rule("));
+        assert!(generated.contains("hl.layer_rule("));
+        let parsed =
+            expand_lua_config(Path::new("/tmp/hyprland.lua"), Some(&generated), false).unwrap();
+        assert!(parsed.contains("windowrulev2 ="), "{parsed}");
+        assert!(parsed.contains("layerrule ="), "{parsed}");
     }
 
     #[test]
